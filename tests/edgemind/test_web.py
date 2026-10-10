@@ -37,6 +37,29 @@ def test_provider_probe_reports_missing_key_without_calling_client():
     assert called == []
 
 
+def test_run_agent_turn_forwards_selected_orchestration_mode(monkeypatch):
+    import edgemind.web as web
+
+    class Agent:
+        def __init__(self):
+            self.mode = None
+
+        def run_turn(self, task_id, text, images, audio, **kwargs):
+            self.mode = kwargs.get("orchestration_mode")
+            return SimpleNamespace(answer="ok", trace={"status": "succeeded"}, run_id="run-1",
+                                   pending_tool_calls=[])
+
+    agent = Agent()
+    monkeypatch.setattr(web, "_HARNESS_SERVICE", {"agent": agent})
+
+    result = web.run_agent_turn("task-1", "multi step", [], None,
+                                orchestration_mode="multi")
+
+    assert result[0] == "ok", result
+    assert agent.mode == "multi"
+    assert result[1]["pending_tool_calls"] == []
+
+
 def test_gradio_demo_builds_without_importing_legacy_rag_module():
     import sys
     from edgemind.web import build_demo

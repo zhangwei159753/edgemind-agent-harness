@@ -291,12 +291,14 @@ def format_answer_with_sources(answer: str, trace: dict) -> str:
     return answer if not links else answer.rstrip() + "\n\n**来源**\n" + "\n".join(links)
 
 
-def run_agent_turn(task_id: str, text: str, images, audio, skill_id: str = "", progress=None):
+def run_agent_turn(task_id: str, text: str, images, audio, skill_id: str = "", progress=None,
+                   orchestration_mode: str = "auto"):
     if not task_id or not task_id.strip():
         return "请先创建任务并填写任务 ID。", {"status": "invalid"}, ""
     try:
         turn = _harness_service()["agent"].run_turn(
             task_id.strip(), text or "", images or [], audio or None, skill_id=skill_id or None,
+            orchestration_mode=orchestration_mode or "auto",
             on_tool_status=(lambda description: progress(desc=description)) if progress else None)
         return turn.answer, {**turn.trace, "pending_tool_calls": turn.pending_tool_calls}, turn.run_id
     except Exception as exc:
@@ -514,8 +516,9 @@ def load_task_ui(task_id: str):
 
 
 def agent_chat_turn(task_id: str, text: str, images, audio, history, skill_id: str = "",
-                    progress=gr.Progress(track_tqdm=False)):
-    answer, trace, run_id = run_agent_turn(task_id, text, images, audio, skill_id, progress)
+                    orchestration_mode: str = "auto", progress=gr.Progress(track_tqdm=False)):
+    answer, trace, run_id = run_agent_turn(task_id, text, images, audio, skill_id, progress,
+                                           orchestration_mode)
     answer = format_answer_with_sources(answer, trace)
     failed = trace.get("status") in {"failed", "error", "invalid"}
     history = list(history or [])
@@ -585,6 +588,12 @@ def build_demo():
                         user_text = gr.Textbox(label="发送消息", placeholder="给 EdgeMind 发消息…", lines=2, show_label=False)
                         skill_selector = gr.Dropdown(label="工作流", choices=skill_choices(), value="",
                                                      info="工作流会限制可用工具；普通对话自动选择已启用工具。")
+                        orchestration_selector = gr.Dropdown(
+                            label="Agent 协作模式",
+                            choices=[("自动（默认）", "auto"), ("单 Agent", "single"), ("多 Agent 协作", "multi")],
+                            value="auto",
+                            info="自动模式按任务复杂度路由；多 Agent 会增加规划与审核调用。",
+                        )
                         with gr.Row(elem_id="ed-compose-actions"):
                             with gr.Accordion("添加图片与语音", open=False, elem_id="ed-attachments"):
                                 gr.Markdown("图片会发送给 DeepSeek；音频在本机转写，只有文字进入对话。首次使用可能较慢。", elem_classes=["ed-audio-note"])
@@ -717,8 +726,8 @@ def build_demo():
         pause.click(lambda identity: change_task_state(identity, "pause"), inputs=task_selector, outputs=task_status)
         resume.click(lambda identity: change_task_state(identity, "resume"), inputs=task_selector, outputs=task_status)
         complete.click(lambda identity: change_task_state(identity, "complete"), inputs=task_selector, outputs=task_status)
-        send.click(agent_chat_turn, inputs=[task_selector, user_text, images, audio, chatbot, skill_selector], outputs=[chatbot, turn_trace, last_run_id, user_text, images, audio])
-        user_text.submit(agent_chat_turn, inputs=[task_selector, user_text, images, audio, chatbot, skill_selector], outputs=[chatbot, turn_trace, last_run_id, user_text, images, audio])
+        send.click(agent_chat_turn, inputs=[task_selector, user_text, images, audio, chatbot, skill_selector, orchestration_selector], outputs=[chatbot, turn_trace, last_run_id, user_text, images, audio])
+        user_text.submit(agent_chat_turn, inputs=[task_selector, user_text, images, audio, chatbot, skill_selector, orchestration_selector], outputs=[chatbot, turn_trace, last_run_id, user_text, images, audio])
         apply_correction.click(correct_chat_turn, inputs=[task_selector, last_run_id, correction, chatbot], outputs=[chatbot, turn_trace, last_run_id, correction])
         submit_feedback.click(record_agent_feedback,
                               inputs=[task_selector, last_run_id, feedback_outcome, feedback_category, feedback_memory, feedback_note],
