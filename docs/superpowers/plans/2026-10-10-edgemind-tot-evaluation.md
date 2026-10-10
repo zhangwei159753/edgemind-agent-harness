@@ -43,11 +43,11 @@
 - `select_candidate(candidates: tuple[PlanCandidate, ...]) -> tuple[PlanCandidate | None, dict]` ranks only safety-valid plans with fixed weights; ties prefer fewer steps then candidate ID. No candidates returns `(None, reason_summary)`.
 - Score formula: `0.35*goal_coverage + 0.25*evidence_availability + 0.20*tool_availability + 0.10*(1-risk_score) + 0.10*(1-estimated_cost)`. Reject `safety_ok=False` before scoring; all inputs are normalized finite values in [0,1].
 
-- [ ] **Step 1: Write failing tests** for schema bounds, graph cycles, forbidden tools, hard safety, no-valid-plan, max-3 candidates and deterministic tie-break.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_tot_planning.py -q`; confirm failures.
-- [ ] **Step 3: Implement** pure validation and deterministic scoring with no model/provider calls in the scorer.
-- [ ] **Step 4: Run tests** and assert output contains only plan summaries/scores, not raw scratchpad.
-- [ ] **Step 5: Commit** as `feat: validate and score bounded plan candidates`.
+- [x] **Step 1: Write failing tests** for schema bounds, graph cycles, forbidden tools, hard safety, no-valid-plan, max-3 candidates and deterministic tie-break.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_tot_planning.py -q`; confirm failures.
+- [x] **Step 3: Implement** pure validation and deterministic scoring with no model/provider calls in the scorer.
+- [x] **Step 4: Run tests** and assert output contains only plan summaries/scores, not raw scratchpad.
+- [x] **Step 5: Commit** as `feat: validate and score bounded plan candidates`.
 
 ### Task 2: Planner integration and regression dataset format
 
@@ -64,11 +64,11 @@
 - Add optional case fields `orchestration_mode`, `expected_plan_id`, `expected_roles`, and `max_model_calls` (integer 1..8); preserve existing v1 records by defaulting to single mode and existing limits. Reuse the existing secret/dynamic-code scanner for every new field.
 - Fixture `responses` remain deterministic and fixture mode must not execute MCP or external I/O.
 
-- [ ] **Step 1: Write failing tests** for selecting and executing one plan, all-invalid fallback, provider error, max-call abort, expected role sequence, legacy v1 loader compatibility, and MCP non-execution.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_tot_integration.py tests/edgemind/test_agent_eval_fixtures.py -q`; confirm failures.
-- [ ] **Step 3: Integrate** validated candidate selection with the prior orchestration runner and add backward-compatible loader fields.
-- [ ] **Step 4: Run tests**; verify one candidate is executed, no candidate raw output leaks to final trace, and all fixture APIs stay isolated.
-- [ ] **Step 5: Commit** as `feat: integrate bounded planning with agent evaluation`.
+- [x] **Step 1: Write failing tests** for selecting and executing one plan, all-invalid fallback, provider error, max-call abort, expected role sequence, legacy v1 loader compatibility, and MCP non-execution.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_tot_integration.py tests/edgemind/test_agent_eval_fixtures.py -q`; confirm failures.
+- [x] **Step 3: Integrate** validated candidate selection with the prior orchestration runner and add backward-compatible loader fields.
+- [x] **Step 4: Run tests**; verify one candidate is executed, no candidate raw output leaks to final trace, and all fixture APIs stay isolated.
+- [x] **Step 5: Commit** as `feat: integrate bounded planning with agent evaluation`.
 
 ### Task 3: Comparative metrics, gate, and quality UI
 
@@ -85,11 +85,11 @@
 - Comparison requires identical dataset hash and reports per-case differences for single vs multi mode.
 - Promotion gate rejects any forbidden tool attempt, `case_pass_rate < 0.80`, regression against single-agent baseline greater than 0.05, or measured p95 latency above a user-entered `max_latency_ms`; max planner/model calls remain 8 per run. Add `latency_ms_p95` to the report. Missing gold/usage is N/A and never treated as zero. Token usage is reported when returned by the provider; latency and call-count budgets still apply when token usage is unavailable.
 
-- [ ] **Step 1: Write failing tests** for metric N/A, equal-dataset comparison, per-case output, forbidden-tool hard gate, quality/cost regression gate and no usage provider.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_multi_agent_evaluation.py tests/edgemind/test_agent_experiments.py -q`; confirm failures.
-- [ ] **Step 3: Implement** additive report/gate fields and render comparison in the existing Agent Quality view; do not change existing RAG evaluation semantics.
-- [ ] **Step 4: Run tests** and inspect the fixture report for clear baseline/candidate mode labels and N/A values.
-- [ ] **Step 5: Commit** as `feat: gate multi-agent rollout on regression evidence`.
+- [x] **Step 1: Write failing tests** for metric N/A, equal-dataset comparison, per-case output, forbidden-tool hard gate, quality/cost regression gate and no usage provider.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_multi_agent_evaluation.py tests/edgemind/test_agent_experiments.py -q`; confirm failures.
+- [x] **Step 3: Implement** additive report/gate fields and render comparison in the existing Agent Quality view; do not change existing RAG evaluation semantics.
+- [x] **Step 4: Run tests** and inspect the fixture report for clear baseline/candidate mode labels and N/A values.
+- [x] **Step 5: Commit** as `feat: gate multi-agent rollout on regression evidence`.
 
 ### Task 4: End-to-end fixture and documentation
 
@@ -99,8 +99,8 @@
 - Test: `tests/edgemind/test_agent_tot_integration.py`
 - Test: all `tests/edgemind`
 
-- [ ] **Step 1: Ensure fixture cases** cover simple single-agent path, complex collaboration, evidence gap/revision, unsafe plan, provider failure, and budget exhaustion.
-- [ ] **Step 2: Run targeted tests**; verify all multi-agent reports are fixture-mode and no real API/network is used.
-- [ ] **Step 3: Document** candidate generation/scoring, caps, comparison metrics, rollout gate and limitations.
-- [ ] **Step 4: Run** `python -m pytest tests/edgemind -q`; expect all tests pass.
-- [ ] **Step 5: Commit** as `docs: document bounded planning evaluation`.
+- [x] **Step 1: Ensure fixture cases** cover simple single-agent path, complex collaboration, evidence gap/revision, unsafe plan, provider failure, and budget exhaustion.
+- [x] **Step 2: Run targeted tests**; verify all multi-agent reports are fixture-mode and no real API/network is used.
+- [x] **Step 3: Document** candidate generation/scoring, caps, comparison metrics, rollout gate and limitations.
+- [x] **Step 4: Run** `python -m pytest tests/edgemind -q`; 222 tests pass.
+- [x] **Step 5: Commit** as `docs: document bounded planning evaluation`.

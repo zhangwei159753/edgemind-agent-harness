@@ -67,12 +67,12 @@ Agent 工具页显示 Open-Meteo、Brave Search 和 MCP 的可用状态。天气
 
 Agent 工作台提供“自动（默认）”“单 Agent”“多 Agent 协作”三种路由。自动模式只把多阶段任务交给协作流程，普通问答仍走现有单 Agent；显式多 Agent 适合需要先计划、再执行并检查结果的请求，会增加模型调用与延迟。
 
-协作流程由一个协调器按顺序调度 Planner、Researcher、Executor、Reviewer。Planner 输出最多 5 步的结构化计划；Researcher 只整理已有记忆与 RAG 证据 ID，不调用模型；Executor 只获得经计划、策略和工作流 allowlist 交集过滤的工具；Reviewer 检查结论与证据，最多触发一次修订。角色调用预算默认 8。规划输出异常或 Provider 出错时，工作流回退到原单 Agent 执行器；MCP 副作用仍需人工确认。
+协作流程由一个协调器按顺序调度 Planner、Researcher、Executor、Reviewer。Planner 最多输出 3 个、每个最多 5 步的候选计划；系统校验 schema、依赖 DAG、证据 ID、工具 allowlist 和调用预算，再按目标覆盖、证据/工具可用性、风险与成本进行确定性评分。安全条件是硬门槛，平分时选步骤更少的计划。Researcher 只整理已有记忆与 RAG 证据 ID，不调用模型；Executor 只获得经选中计划、策略和工作流 allowlist 交集过滤的工具；Reviewer 检查结论与证据，最多触发一次修订。每轮模型调用预算最多 8。Provider 暂时失败可回退到单 Agent；格式错误或不安全计划会停止执行并请求澄清。MCP 副作用仍需人工确认。
 
-运行详情展示路由原因、角色 handoff、计划摘要、审核状态和模型调用数，不保存或展示隐藏 CoT。回归样例位于 `tests/data/agent_orchestration_v1.jsonl`，只用注入的本地 Provider/Executor 夹具，不连接 DeepSeek、MCP 或外网：
+运行详情展示路由原因、角色 handoff、选中计划 ID、计划摘要、候选评分摘要、审核状态和模型调用数，不保存或展示隐藏 CoT。基础回归样例位于 `tests/data/agent_orchestration_v1.jsonl`；ToT/评测样例位于 `tests/data/agent_multi_agent_v1.jsonl`。固定 Fixture 不连接 DeepSeek、MCP 或外网：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\edgemind\test_agent_orchestration.py tests\edgemind\test_agent_orchestration_integration.py -q
+.\.venv\Scripts\python.exe -m pytest tests\edgemind\test_agent_tot_planning.py tests\edgemind\test_agent_tot_integration.py tests\edgemind\test_agent_orchestration.py tests\edgemind\test_agent_orchestration_integration.py -q
 ```
 
 ## 任务与记忆
@@ -120,8 +120,9 @@ python myapp.py
 1. 在“Agent 工作台”选择或创建任务，发起一轮对话；展开“结果反馈”，记录 success、partial 或 failure。可选地用 JSON 将本轮实际暴露的记忆 ID 标为 helpful、not_helpful 或 uncertain，例如 `{"memory-id":"helpful"}`。
 2. 打开“Agent 质量”，在候选策略编辑框只填写待修改字段，并写清改动假设。候选会继承当前策略未改动的字段，保存后得到新版本和父版本关系。
 3. 保持“隔离 Fixture（默认）”，数据集默认指向 `tests/data/agent_eval_v1.jsonl`，点击“运行基线对比”。评测对每个案例分别创建临时 SQLite Harness，使用固定 Provider、工具和 RAG 夹具，不会调用生产 DeepSeek/MCP/API，也不会修改真实任务与记忆。
-4. 检查报告中的数据集哈希、策略哈希、指标、N/A 原因和逐案例差异。只有所有门禁通过的报告可以晋级；填写该报告的 Experiment ID，勾选确认后点击“确认晋级”。
-5. 若新版本表现退化，展开“回滚策略”，选择已有版本并勾选确认后执行回滚。策略历史和转换记录保留在本地 SQLite。
+4. 若要比较编排路径，将数据集切换为 `tests/data/agent_multi_agent_v1.jsonl`，点击“运行单/多 Agent 对照”。报告验证两次回放使用相同数据集哈希，展示逐案例结果、平均调用数、平均延迟、p95 延迟及 N/A 原因；多 Agent 启用门禁要求案例通过率至少 0.80、相对单 Agent 的通过率/有标注质量指标退化不超过 0.05、越权调用为 0，并且 p95 不超过输入上限。该门禁只说明固定样例回放是否通过，不自动修改生产路由。
+5. 检查策略实验报告中的数据集哈希、策略哈希、指标、N/A 原因和逐案例差异。只有所有策略门禁通过的报告可以晋级；填写该报告的 Experiment ID，勾选确认后点击“确认晋级”。
+6. 若新版本表现退化，展开“回滚策略”，选择已有版本并勾选确认后执行回滚。策略历史和转换记录保留在本地 SQLite。
 
 真实 Provider 模式单独标记为 live，需要勾选可见的外部调用确认。它会使用已配置的 DeepSeek Provider 与只读内置工具；MCP 副作用仍受原有人工确认约束。真实模式可能产生网络/API 费用，且结果具有模型非确定性。评测报告不记录 API key；fixture 报告明确标为 `fixture`，不能作为真实 Provider 的性能结论。
 
@@ -139,10 +140,12 @@ Agent 回归集是小型工程回归案例，不是统计代表性 Benchmark。�
 - `memory_precision_at_k` / `memory_recall_at_k`：仅在案例提供人工 gold memory ID 时计算。
 - `citation_coverage`：仅在案例提供必需引用 ID 时计算。
 - `expected_outcome_accuracy`：仅在案例提供期望任务结果标签时计算。
-- `latency_ms_mean`：当前评测运行收集到的 Agent 端到端耗时均值；token usage 在 Provider 不提供时显示 N/A。
+- `latency_ms_mean` / `latency_ms_p95`：当前评测运行收集到的 Agent 端到端平均耗时与最近秩 p95；多 Agent 对照门禁使用 p95。
+- `model_call_count_mean`：每个案例实际 Planner/Reviewer/Executor Provider 调用数均值；候选计划评分本身不增加模型调用。硬上限为每轮 8 次。
+- `token_usage_mean`：Provider 返回 usage 时统计；当前 fixture 不模拟 token usage，因此显示 N/A，不以 0 代替。
 - `user_feedback_outcome_rate`：Fixture 不伪造用户标注，因此没有可链接的标注时显示 N/A。
 
-候选默认要求案例通过率至少 0.8，工具成功率相对父策略退化不超过 0.05，并且越权/禁用调用为 0。报告缺少门禁所需数据、基线和候选数据集哈希不同、评测异常或存在安全失败时，晋级被阻止。该默认阈值是项目内的回归门槛，不代表业务 SLA。
+策略候选默认要求案例通过率至少 0.8，工具成功率相对父策略退化不超过 0.05，并且越权/禁用调用为 0。报告缺少门禁所需数据、基线和候选数据集哈希不同、评测异常或存在安全失败时，晋级被阻止。该默认阈值是项目内的回归门槛，不代表业务 SLA。
 
 新闭环规格与实施计划：`docs/specs/2026-10-10-edgemind-agent-quality-experience-loop.md`、`docs/plans/2026-10-10-edgemind-agent-quality-experience-loop.md`。
 
