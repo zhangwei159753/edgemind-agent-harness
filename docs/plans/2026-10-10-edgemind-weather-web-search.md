@@ -1,7 +1,6 @@
 
 # EdgeMind 天气、网页搜索与受限 Skills 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
 **Goal:** 在 EdgeMind 中交付可真实调用的天气、网页搜索与受限网页读取，配套有边界的 DeepSeek 工具调用循环、两个内置 Skills、配置诊断和来源展示。
 

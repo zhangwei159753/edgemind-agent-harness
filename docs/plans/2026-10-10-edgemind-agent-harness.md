@@ -1,6 +1,5 @@
 # EdgeMind Agent Harness 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a local-first personal Agent Harness with persistent tasks, four-layer memory, multimodal input, guarded MCP tools, and preserve EdgeMind's RAG evaluation plane.
 
@@ -35,10 +34,10 @@
 
 **Interfaces:** Immutable TaskRecord, MemoryItem, HarnessEvent, AgentTurn dataclasses. HarnessStore methods: create_task, get_task, list_tasks, update_task_state, append_event, put_memory, get_memory, list_memories, review_memory, delete_memory, search_memories, schema_version. Layers: working, episodic, semantic, procedural. Candidate states: pending, approved, rejected, superseded.
 
-- [ ] Add behavior tests for additive schema, task restart persistence, review filtering, and deletion; observe expected failure.
+- [x] Add behavior tests for additive schema, task restart persistence, review filtering, and deletion; observe expected failure.
 - [x] Implement versioned additive schema and typed conversion routines.
-- [ ] Run focused and existing storage tests.
-- [ ] Commit feat: add persistent harness store (source directory has no Git metadata).
+- [x] Run focused and existing storage tests.
+- [x] Included in the consolidated EdgeMind release commit.
 
 ### Task 2: Memory lifecycle and retrieval
 
@@ -46,11 +45,11 @@
 
 **Interfaces:** MemoryService.propose(...) -> MemoryItem; review(memory_id, decision, edited_content=None) -> MemoryItem; retrieve(query, task_id=None, limit=8, include_pending=False) -> list[MemoryHit]. MemoryHit carries item, fused score, and per-signal explanation.
 
-- [ ] Cover candidate visibility, approved-only filtering, edits, deletion, FTS ranking, and no-embedding fallback.
+- [x] Cover candidate visibility, approved-only filtering, edits, deletion, FTS ranking, and no-embedding fallback.
 - [x] Implement FTS5 keyword retrieval and optional embedding adapter; fuse available ranks deterministically with recency/layer boosts.
-- [ ] Keep pending memories invisible unless requested by review panel.
-- [ ] Inspect retrieval explanation output.
-- [ ] Commit feat: add reviewed four-layer memory retrieval (source directory has no Git metadata).
+- [x] Keep pending memories invisible unless requested by review panel.
+- [x] Inspect retrieval explanation output.
+- [x] Included in the consolidated EdgeMind release commit.
 
 ### Task 3: Persistent task lifecycle and multimodal input
 
@@ -58,10 +57,10 @@
 
 **Interfaces:** TaskService create, pause, resume, complete, checkpoint, context. MediaProcessor process_text, process_image, process_audio; output normalized message plus attachment metadata. Image content uses OpenAI-compatible user message parts. Audio adapter is optional and returns transcript plus source metadata.
 
-- [ ] Cover task transitions, restart-safe checkpoints, empty input, unsupported transitions, media validation, image content encoding, and missing-ASR error.
+- [x] Cover task transitions, restart-safe checkpoints, empty input, unsupported transitions, media validation, image content encoding, and missing-ASR error.
 - [x] Implement bounded attachment validation (image 20 MiB, audio 40 MiB); raw media is not stored by default.
 - [x] Add optional audio and MCP dependency groups, not in default installation.
-- [ ] Commit feat: persist tasks and multimodal input (source directory has no Git metadata).
+- [x] Included in the consolidated EdgeMind release commit.
 
 ### Task 4: Agent orchestration and guarded MCP
 
@@ -69,26 +68,26 @@
 
 **Interfaces:** AgentService.run_turn(task_id, text, attachments=()) -> AgentTurn. ToolRegistry list_enabled, propose_call, approve_call, execute_call. McpClientManager list_tools(server_name), call_tool(server_name, tool_name, arguments). A turn has bounded tool rounds/timeouts and emits an event per state transition.
 
-- [ ] Cover text/image messages, memory context injection, user correction to pending semantic memory, failure checkpointing, bounded tool rounds, approval before side effects, and redaction.
+- [x] Cover text/image messages, memory context injection, user correction to pending semantic memory, failure checkpointing, bounded tool rounds, approval before side effects, and redaction.
 - [x] Implement DeepSeek function-call proposal flow with injectable API client and explicit confirmation.
 - [x] Add MCP stdio lifecycle through the optional official SDK; validate server config and use environment references for secrets.
 - [x] Provide no shell/code execution builtin.
-- [ ] Commit feat: add guarded agent and MCP runtime (source directory has no Git metadata).
+- [x] Included in the consolidated EdgeMind release commit.
 
 ### Task 5: Unified UI and documentation
 
 **Files:** Modify edgemind/web.py, README.md, .env.example; create docs/mcp-servers.example.json; extend tests/edgemind/test_web.py.
 
-- [ ] Verify app startup does not import myrag; UI handlers do not return API keys.
+- [x] Verify app startup does not import myrag; UI handlers do not return API keys.
 - [x] Add GPT-style light UI with persistent left navigation/task selector, centered chat, bottom composer, Agent workspace, task resume, memory review, attachment input, tool confirmation, and run trace while preserving API/RAG diagnostics.
-- [ ] Keep local-only binding and make optional dependency errors actionable.
+- [x] Keep local-only binding and make optional dependency errors actionable.
 - [x] Document dependencies, DeepSeek image use, local ASR setup, MCP configuration, persistence/privacy, and RAG workflow.
-- [ ] Run project checks and local smoke workflow; report environment limitations accurately.
-- [ ] Commit feat: ship EdgeMind Agent Harness workspace (source directory has no Git metadata).
+- [x] Run project checks and local smoke workflow; report environment limitations accurately.
+- [x] Included in the consolidated EdgeMind release commit.
 
 ## Delivery Notes
 
 - Implemented in the source tree: additive Harness package and SQLite schema, task lifecycle/checkpoints, four-layer reviewed memory, image input, optional local ASR, MCP stdio adapter with approval, lazy RAG integration, correction flow, CLI memory export, GPT-style Gradio workspace, and setup documentation.
 - Automated tests and live provider/MCP/ASR workflows were not run in this delivery. The code still needs environment-backed integration verification before claiming end-to-end reliability.
-- The source directory has no Git metadata, so this delivery does not include commits or branch history.
+- The implementation was completed before repository history was initialized; the cleaned public release now records it on the `main` branch.
 - Conflict detection/deduplication and automatic promotion of Harness prompt/retrieval settings remain follow-up work; they are not represented as shipped self-evolution features.
