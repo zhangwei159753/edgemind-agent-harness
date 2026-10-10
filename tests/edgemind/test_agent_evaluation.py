@@ -28,6 +28,10 @@ class _Completions:
     def create(self, **kwargs):
         self.requests.append(kwargs)
         response = self.responses.pop(0)
+        if response.get("error") == "TimeoutError":
+            raise TimeoutError("fixture provider timeout")
+        if response.get("error") == "ConnectionError":
+            raise ConnectionError("fixture provider unavailable")
         calls = [_call(item["name"], item.get("arguments", {}), item.get("id", f"call-{len(self.requests)}-{i}"))
                  for i, item in enumerate(response.get("tool_calls", []))]
         message = SimpleNamespace(content=response.get("content"), tool_calls=calls)
@@ -127,7 +131,7 @@ def test_multi_agent_fixture_records_selected_plan_roles_and_call_budget():
     assert case["selected_plan_id"] == "summary-plan"
     assert case["role_sequence"] == ["planner", "researcher", "executor", "reviewer"]
     assert case["model_call_count"] == 3 <= case["max_model_calls"]
-    assert report["metrics"]["model_call_count_mean"] == 3
+    assert report["metrics"]["model_call_count_mean"] == 11 / 6
     assert report["metrics"]["latency_ms_p95"] is not None
 
 
@@ -193,6 +197,20 @@ def test_live_evaluation_requires_explicit_confirmation(tmp_path):
     runner = AgentEvaluationRunner(_agent_factory, _fixtures, lambda: HarnessStore(":memory:"))
     with pytest.raises(ValueError, match="confirmation"):
         runner.run(DATASET, policy, mode="live")
+
+
+def test_provider_token_usage_is_summed_without_fabricating_missing_usage():
+    from edgemind.harness.usage import sum_usage, usage_from_response
+
+    usage_a = usage_from_response(SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=12, completion_tokens=4, total_tokens=16)))
+    usage_b = usage_from_response(SimpleNamespace(usage={"prompt_tokens": 5,
+                                                        "completion_tokens": 2, "total_tokens": 7}))
+
+    assert sum_usage([usage_a, usage_b]) == {"prompt_tokens": 17, "completion_tokens": 6,
+                                             "total_tokens": 23}
+    assert usage_from_response(SimpleNamespace()) is None
+    assert sum_usage([]) is None
 
 
 def test_unavailable_expected_tool_case_is_na_instead_of_a_runtime_failure(tmp_path):

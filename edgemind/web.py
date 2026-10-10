@@ -381,6 +381,43 @@ def run_agent_experiment(policy_id: str, dataset_path: str, mode: str, repetitio
         return {"passed": False, "error_category": type(exc).__name__, "error_message": str(exc)[:500]}
 
 
+def run_agent_mode_comparison(dataset_path: str, max_latency_ms: float):
+    try:
+        from .agent_eval_fixtures import build_evaluation_runner
+        from .agent_experiments import AgentExperimentService, AgentQualityGates
+
+        services = _harness_service()
+        if not dataset_path or not Path(dataset_path).is_file():
+            raise ValueError("评测数据集文件不存在")
+        runner = build_evaluation_runner(services)
+        experiments = AgentExperimentService(services["policies"], runner, services["store"],
+                                             AgentQualityGates())
+        report = experiments.evaluate_orchestration_modes(
+            "baseline-v1", dataset_path, max_latency_ms=float(max_latency_ms))
+        def metric_text(value, suffix=""):
+            return "N/A" if value is None else f"{value:.3f}{suffix}"
+        single, multi = report["single"]["metrics"], report["multi"]["metrics"]
+        gate = report["quality_gate"]
+        summary = (
+            f"**启用门禁：{'通过' if gate['passed'] else '未通过'}**  \n"
+            f"案例通过率：单 Agent {metric_text(single.get('case_pass_rate'))} / "
+            f"多 Agent {metric_text(multi.get('case_pass_rate'))}  ·  "
+            f"平均模型调用：{metric_text(single.get('model_call_count_mean'))} / "
+            f"{metric_text(multi.get('model_call_count_mean'))}  ·  "
+            f"p95 延迟：{metric_text(single.get('latency_ms_p95'), ' ms')} / "
+            f"{metric_text(multi.get('latency_ms_p95'), ' ms')}  ·  "
+            f"Token：{metric_text(single.get('token_usage_mean'))} / "
+            f"{metric_text(multi.get('token_usage_mean'))}"
+        )
+        if gate["reasons"]:
+            summary += "  \n门禁原因：" + "；".join(gate["reasons"])
+        return report, summary
+    except Exception as exc:
+        error = {"quality_gate": {"passed": False, "reasons": [str(exc)[:300]]},
+                 "error_category": type(exc).__name__}
+        return error, f"对照评测失败：{str(exc)[:300]}"
+
+
 def promote_agent_experiment(experiment_id: str, confirmed: bool):
     try:
         from .agent_experiments import AgentExperimentService, AgentQualityGates
@@ -773,6 +810,14 @@ def build_demo():
                         live_confirm = gr.Checkbox(label="我确认真实评测会调用已配置 Provider 与只读工具", value=False)
                         evaluate_policy = gr.Button("运行基线对比", variant="primary")
                         experiment_result = gr.JSON(label="门禁报告与逐案例差异")
+                        gr.Markdown("#### 单 Agent / 多 Agent 对照")
+                        gr.Markdown("使用相同 JSONL 样例分别回放两种编排路径；Fixture 不访问 DeepSeek、MCP 或外网。")
+                        with gr.Row():
+                            mode_max_latency = gr.Number(label="多 Agent p95 延迟上限（ms）", value=10000,
+                                                         minimum=1, maximum=600000, precision=0)
+                            compare_modes = gr.Button("运行单/多 Agent 对照", elem_classes=["secondary"])
+                        mode_comparison_result = gr.JSON(label="同数据集对照、逐案例差异与启用门禁")
+                        mode_comparison_summary = gr.Markdown("指标摘要将在运行后显示；无 gold 或 Provider usage 时显示 N/A。")
                         experiment_id = gr.Textbox(label="晋级所需 Experiment ID")
                         promote_confirm = gr.Checkbox(label="我确认将通过门禁的候选设为当前策略", value=False)
                         promote_policy = gr.Button("确认晋级", elem_classes=["secondary"])
@@ -854,6 +899,8 @@ def build_demo():
         evaluate_policy.click(run_agent_experiment,
                               inputs=[quality_policy, eval_dataset, eval_mode, eval_repetitions, live_confirm],
                               outputs=experiment_result)
+        compare_modes.click(run_agent_mode_comparison, inputs=[eval_dataset, mode_max_latency],
+                            outputs=[mode_comparison_result, mode_comparison_summary])
         promote_policy.click(promote_agent_experiment, inputs=[experiment_id, promote_confirm], outputs=promote_result).then(
             agent_policy_dropdown_updates, outputs=[quality_policy, rollback_policy])
         rollback_button.click(rollback_agent_policy, inputs=[rollback_policy, rollback_confirm], outputs=rollback_result).then(

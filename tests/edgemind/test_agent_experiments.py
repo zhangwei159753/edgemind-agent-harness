@@ -141,3 +141,26 @@ def test_quality_gate_configuration_rejects_non_finite_thresholds():
         AgentQualityGates(required_min={"case_pass_rate": float("nan")})
     with pytest.raises(ValueError):
         AgentQualityGates(max_regression={"latency": float("inf")})
+
+
+def test_multi_agent_comparison_gate_rejects_quality_regression_and_unsafe_tools(tmp_path):
+    store = HarnessStore(tmp_path / "state.sqlite3")
+    policies = AgentPolicyService(store)
+
+    class ModeRunner:
+        def compare_modes(self, *args, **kwargs):
+            return {"dataset_hash": "same", "single": {"metrics": {
+                        "case_pass_rate": 0.9, "citation_coverage": None,
+                        "memory_precision_at_k": None}},
+                    "multi": {"metrics": {"case_pass_rate": 0.8,
+                        "citation_coverage": None, "memory_precision_at_k": None,
+                        "forbidden_tool_attempts": 1, "latency_ms_p95": 300,
+                        "model_call_count_mean": 3}, "case_results": []},
+                    "metrics_delta": {}, "case_differences": []}
+
+    service = AgentExperimentService(policies, ModeRunner(), store, AgentQualityGates())
+    report = service.evaluate_orchestration_modes("baseline-v1", "dataset.jsonl", 500)
+
+    assert report["quality_gate"]["passed"] is False
+    assert any("regressed" in reason for reason in report["quality_gate"]["reasons"])
+    assert any("tool attempts" in reason for reason in report["quality_gate"]["reasons"])

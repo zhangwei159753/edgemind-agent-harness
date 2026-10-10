@@ -14,6 +14,7 @@ from .models import (
 )
 from .prompts import PLANNER_PROMPT, PROMPT_VERSION, REVIEWER_PROMPT
 from .planning import select_candidate, validate_candidates
+from ..usage import usage_from_response
 
 _MAX_CONTEXT_BYTES = 60 * 1024
 _MAX_ROLE_OUTPUT_BYTES = 16 * 1024
@@ -95,6 +96,15 @@ class AgentOrchestrator:
         return context
 
     @staticmethod
+    def _add_usage(trace: dict[str, Any], usage: dict[str, int] | None) -> None:
+        if not usage:
+            return
+        totals = trace.setdefault("token_usage", {"prompt_tokens": 0, "completion_tokens": 0,
+                                                   "total_tokens": 0})
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            totals[field] += usage.get(field, 0)
+
+    @staticmethod
     def _new_handoff(request: OrchestrationRequest, role: str, goal: str,
                      evidence_ids: tuple[str, ...], remaining_calls: int,
                      allowed_tools: tuple[str, ...] | None = None) -> Handoff:
@@ -103,7 +113,8 @@ class AgentOrchestrator:
                        request.allowed_tools if allowed_tools is None else allowed_tools,
                        max(1, remaining_calls), schema)
 
-    def _invoke_role(self, role: str, handoff: Handoff, context: dict[str, Any], stage_ms: dict[str, float]) -> RoleResult:
+    def _invoke_role(self, role: str, handoff: Handoff, context: dict[str, Any],
+                     stage_ms: dict[str, float], trace: dict[str, Any]) -> RoleResult:
         prompt = PLANNER_PROMPT if role == "planner" else REVIEWER_PROMPT
         message_context = {"handoff": handoff.to_dict(), "context": context}
         user_content = json.dumps(message_context, ensure_ascii=False, separators=(",", ":"))
@@ -116,6 +127,7 @@ class AgentOrchestrator:
                 messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_content}],
                 stream=False,
             )
+            self._add_usage(trace, usage_from_response(response))
             message = response.choices[0].message
             if getattr(message, "tool_calls", None):
                 return RoleResult(role, "failed", {}, "unexpected_tool_call")
@@ -221,6 +233,7 @@ class AgentOrchestrator:
             trace["call_count"] += result.model_calls
         else:
             trace["call_count"] += result.tool_rounds if result.status == "awaiting_tool_approval" else result.tool_rounds + 1
+        self._add_usage(trace, result.trace.get("token_usage"))
         self._append_handoff(request, trace, handoff, result.status, result.trace.get("error_type"))
         return result
 
@@ -253,7 +266,7 @@ class AgentOrchestrator:
                                             tuple([item["memory_id"] for item in context["memories"]]
                                                   + [item["chunk_id"] for item in context["evidence"]]),
                                             min(self.role_call_budget, self.model_call_budget), allowed_tools=())
-        planner = self._invoke_role("planner", planner_handoff, context, stage_ms)
+        planner = self._invoke_role("planner", planner_handoff, context, stage_ms, trace)
         trace["role_calls"] += 1
         trace["call_count"] += 1
         self._append_handoff(request, trace, planner_handoff, planner.status, planner.error_type)
@@ -331,7 +344,7 @@ class AgentOrchestrator:
             reviewer_handoff = self._new_handoff(request, "reviewer", "Review answer quality and evidence support",
                                                  research_ids, self.role_call_budget - trace["role_calls"],
                                                  allowed_tools=())
-            review = self._invoke_role("reviewer", reviewer_handoff, review_context, stage_ms)
+            review = self._invoke_role("reviewer", reviewer_handoff, review_context, stage_ms, trace)
             trace["role_calls"] += 1
             trace["call_count"] += 1
             self._append_handoff(request, trace, reviewer_handoff, review.status, review.error_type)

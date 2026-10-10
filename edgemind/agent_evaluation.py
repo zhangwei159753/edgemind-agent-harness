@@ -197,8 +197,11 @@ def load_agent_dataset(path: str | Path) -> AgentDataset:
         all_response_sets = ([responses] if responses is not None else []) + (
             list(responses_by_mode.values()) if responses_by_mode is not None else [])
         for response in [item for response_set in all_response_sets for item in response_set]:
-            if not isinstance(response, dict) or set(response) - {"content", "tool_calls"}:
+            if (not isinstance(response, dict) or set(response) - {"content", "tool_calls", "error"}
+                    or response.get("error") not in {None, "TimeoutError", "ConnectionError"}):
                 raise ValueError(f"invalid provider response fixture for {example_id}")
+            if response.get("error") and ("content" in response or response.get("tool_calls")):
+                raise ValueError(f"provider error fixture cannot include content or tool calls for {example_id}")
             calls = response.get("tool_calls", [])
             if not isinstance(calls, list) or len(calls) > 12:
                 raise ValueError(f"invalid tool calls fixture for {example_id}")
@@ -355,12 +358,15 @@ class AgentEvaluationRunner:
         differences = []
         for key in sorted(set(single) | set(multi), key=str):
             left, right = single.get(key), multi.get(key)
-            if left is None or right is None or left.get("passed") != right.get("passed"):
+            if (left is None or right is None or left.get("passed") != right.get("passed")
+                    or left.get("checks") != right.get("checks")):
                 differences.append({"example_id": key[0], "repetition": key[1],
                                     "single_passed": None if left is None else left.get("passed"),
                                     "multi_passed": None if right is None else right.get("passed"),
                                     "single_status": None if left is None else left.get("actual_status"),
-                                    "multi_status": None if right is None else right.get("actual_status")})
+                                    "multi_status": None if right is None else right.get("actual_status"),
+                                    "single_checks": None if left is None else left.get("checks"),
+                                    "multi_checks": None if right is None else right.get("checks")})
         return differences
 
     @staticmethod
@@ -408,6 +414,7 @@ class AgentEvaluationRunner:
         role_handoffs = orchestration.get("handoffs", []) if isinstance(orchestration, dict) else []
         role_sequence = [entry.get("role") for entry in role_handoffs if isinstance(entry, dict)]
         model_call_count = orchestration.get("call_count", 0) if isinstance(orchestration, dict) else 0
+        token_usage = orchestration.get("token_usage") if isinstance(orchestration, dict) else None
         forbidden = set(expected.get("forbidden_tool_names", []))
         checks = {}
         checks["orchestration_mode"] = orchestration.get("mode", "single") == case.orchestration_mode
@@ -466,6 +473,9 @@ class AgentEvaluationRunner:
                 "selected_plan_id": orchestration.get("selected_candidate_id"),
                 "role_sequence": role_sequence,
                 "model_call_count": model_call_count,
+                "token_usage": token_usage,
+                "token_usage_total": (token_usage.get("total_tokens") if isinstance(token_usage, dict)
+                                      and isinstance(token_usage.get("total_tokens"), int) else None),
                 "max_model_calls": case.max_model_calls,
                 "actual_outcome": {"succeeded": "success", "failed": "failure",
                                    "awaiting_tool_approval": "awaiting_tool_approval"}.get(turn.status, turn.status),
@@ -506,6 +516,9 @@ class AgentEvaluationRunner:
         latencies = [case["latency_ms"] for case in applicable if isinstance(case.get("latency_ms"), (int, float))]
         model_calls = [case["model_call_count"] for case in applicable
                        if isinstance(case.get("model_call_count"), (int, float))]
+        token_usage = [case["token_usage_total"] for case in applicable
+                       if isinstance(case.get("token_usage_total"), int)
+                       and not isinstance(case.get("token_usage_total"), bool)]
         attempts = len(tool_calls)
         safe_calls = attempts - sum(case.get("unsafe_tool_attempts", 0) for case in cases)
         return {
@@ -522,8 +535,8 @@ class AgentEvaluationRunner:
                                if latencies else None),
             "model_call_count_mean": statistics.fmean(model_calls) if model_calls else None,
             "user_feedback_outcome_rate": None,
-            "token_usage": None,
-            "token_usage_mean": None,
+            "token_usage": statistics.fmean(token_usage) if token_usage else None,
+            "token_usage_mean": statistics.fmean(token_usage) if token_usage else None,
         }
 
     @staticmethod

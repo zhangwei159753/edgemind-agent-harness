@@ -258,6 +258,28 @@ def test_fixture_evaluation_callback_persists_comparison_without_live_provider(t
     assert web.promote_agent_experiment(report["experiment_id"], False)["ok"] is False
 
 
+def test_single_multi_comparison_callback_uses_fixture_mode(tmp_path, monkeypatch):
+    import edgemind.web as web
+    from edgemind.harness.memory import MemoryService
+    from edgemind.harness.policies import AgentPolicyService
+    from edgemind.harness.quality import QualityService
+    from edgemind.harness.store import HarnessStore
+    from edgemind.harness.tools import ToolRegistry
+
+    store = HarnessStore(tmp_path / "state.sqlite3")
+    services = {"store": store, "policies": AgentPolicyService(store),
+                "memory": MemoryService(store), "tools": ToolRegistry(store),
+                "quality": QualityService(store)}
+    monkeypatch.setattr(web, "_HARNESS_SERVICE", services)
+
+    report, summary = web.run_agent_mode_comparison("tests/data/agent_multi_agent_v1.jsonl", 100_000)
+
+    assert report["quality_gate"]["passed"] is True, report
+    assert report["single"]["provider"] == report["multi"]["provider"] == "fixture"
+    assert report["multi"]["orchestration_mode"] == "multi"
+    assert "N/A" in summary
+
+
 def test_gradio_demo_exposes_quality_page_and_feedback_controls():
     from edgemind.web import build_demo
 
@@ -267,3 +289,5 @@ def test_gradio_demo_exposes_quality_page_and_feedback_controls():
 
     assert any(item and "Agent 质量" in str(item) for item in values)
     assert any(item and "结果反馈" in item for item in labels)
+    assert any(item and "运行单/多 Agent 对照" in str(item) for item in values)
+    assert any(item and "gold 或 Provider usage 时显示 N/A" in str(item) for item in values)

@@ -17,6 +17,7 @@ from .builtin_tools import BuiltinToolRegistry
 from .policies import AgentPolicy, AgentPolicyService
 from .skills import SkillRegistry, SkillDefinition
 from .orchestration import AgentOrchestrator, ExecutorResult, OrchestrationRequest, should_orchestrate
+from .usage import sum_usage, usage_from_response
 
 
 class AgentService:
@@ -116,7 +117,8 @@ class AgentService:
                        skill: SkillDefinition | None = None, policy: AgentPolicy | None = None,
                        trace_collector: list[dict] | None = None,
                        allowed_tool_override: tuple[str, ...] | None = None,
-                       max_model_calls: int | None = None):
+                       max_model_calls: int | None = None,
+                       usage_collector: list[dict] | None = None):
         tool_warning = None
         try:
             mcp_tools = self.tools.model_tools()
@@ -168,6 +170,9 @@ class AgentService:
             model_started = time.perf_counter()
             model_calls += 1
             response = self._client().chat.completions.create(**kwargs)
+            usage = usage_from_response(response)
+            if usage is not None and usage_collector is not None:
+                usage_collector.append(usage)
             stage_ms[f"deepseek_round_{rounds + 1}"] = round(
                 (time.perf_counter() - model_started) * 1000, 2
             )
@@ -425,16 +430,18 @@ class AgentService:
 
                 def execute_handoff(handoff, execution_messages):
                     calls_trace = []
+                    usage_collector = []
                     (executor_answer, executor_status, pending_calls, call_data, calls_trace,
                      rounds, warning, tool_context_value, proposal_calls_value, model_calls) = self._run_tool_loop(
                         execution_messages, task_id, run_id, stage_ms, user_text, on_tool_status,
                         selected_skill, policy, trace_collector=calls_trace,
                         allowed_tool_override=handoff.allowed_tools,
                         max_model_calls=handoff.remaining_calls,
+                        usage_collector=usage_collector,
                     )
                     return ExecutorResult(
                         executor_answer, executor_status, pending_calls,
-                        {"tool_calls": calls_trace}, call_data, tool_context_value,
+                        {"tool_calls": calls_trace, "token_usage": sum_usage(usage_collector)}, call_data, tool_context_value,
                         proposal_calls_value, rounds, warning, model_calls,
                     )
 
@@ -457,15 +464,19 @@ class AgentService:
                     "plan_selection": orchestration_result.trace.get("plan_selection"),
                     "review_status": orchestration_result.trace.get("review_status", "unavailable"),
                     "call_count": orchestration_result.trace.get("call_count", 0),
+                    "token_usage": orchestration_result.trace.get("token_usage"),
                     "model_call_budget": orchestration_result.trace.get("model_call_budget", 8),
                     "fallback_reason": orchestration_result.trace.get("fallback_reason"),
                 }
             else:
+                usage_collector = []
                 (answer, status, proposals, tool_call_data, tool_calls_trace, tool_rounds,
-                 tool_warning, tool_context, proposal_calls, _) = self._run_tool_loop(
+                 tool_warning, tool_context, proposal_calls, single_model_calls) = self._run_tool_loop(
                     messages, task_id, run_id, stage_ms, user_text, on_tool_status, selected_skill, policy,
-                    trace_collector=tool_calls_trace,
+                    trace_collector=tool_calls_trace, usage_collector=usage_collector,
                 )
+                orchestration_trace["call_count"] = single_model_calls
+                orchestration_trace["token_usage"] = sum_usage(usage_collector)
             if policy is not None:
                 max_chars = policy.output_constraints["max_output_chars"]
                 answer = answer[:max_chars]
