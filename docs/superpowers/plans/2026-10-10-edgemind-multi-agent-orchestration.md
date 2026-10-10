@@ -52,16 +52,18 @@
 **Files:**
 - Create: `edgemind/harness/orchestration/runner.py`
 - Create: `edgemind/harness/orchestration/prompts.py`
+- Modify: `edgemind/harness/orchestration/__init__.py` (public exports)
+- Modify: `edgemind/harness/orchestration/models.py`
 - Modify: `edgemind/harness/store.py` (event retrieval only if current API cannot return run events)
 - Test: `tests/edgemind/test_agent_orchestration.py`
 
 **Interfaces:**
-- `OrchestrationRequest(task_id: str, run_id: str, objective: str, user_input: str, mode: str, memory_hits: tuple, evidence: tuple, allowed_tools: tuple[str, ...])`.
+- `OrchestrationRequest(task_id: str, run_id: str, objective: str, user_input: str, mode: str, memory_hits: tuple, evidence: tuple, allowed_tools: tuple[str, ...], base_messages: tuple[dict, ...])`.
 - `ExecutorResult(answer: str, status: str, pending_tool_calls: list[dict], trace: dict)`.
 - `AgentOrchestrator(client, store, role_call_budget=8, max_steps=5, max_revisions=1)` with `run(request: OrchestrationRequest, executor: Callable[[Handoff, list[dict]], ExecutorResult], stage_ms: dict[str, float]) -> OrchestrationResult`.
-- `_invoke_role(role: str, handoff: Handoff) -> RoleResult` uses the shared chat completion client for Planner/Reviewer, requires a JSON object in the response, and validates it against the role schema; Researcher is a deterministic retrieval adapter and does not make a model call.
+- `_invoke_role(role: str, handoff: Handoff, context: dict, stage_ms: dict[str, float]) -> RoleResult` uses the shared chat completion client for Planner/Reviewer, requires a JSON object in the response, and validates it against the role schema; Researcher is a deterministic retrieval adapter and does not make a model call.
 - The executor callback receives the current validated handoff and bounded chat messages; the AgentService adapter invokes the existing `_run_tool_loop()` and maps its return tuple to `ExecutorResult`. It is the only route to built-in/MCP execution and must preserve proposal/confirmation semantics.
-- `OrchestrationResult(answer: str, status: str, trace: dict, selected_plan: dict | None, pending_tool_calls: list[dict])`.
+- `OrchestrationResult(answer: str, status: str, trace: dict, selected_plan: dict | None, pending_tool_calls: list[dict])`; `ExecutorResult` also carries the executor trace.
 
 - [ ] **Step 1: Write failing fixture tests** for expected role order, bounded payload handoff, evidence-ID preservation, role-call budget, provider errors, malformed output, and no MCP execution on fallback.
 - [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration.py -q`; confirm behavior failures without network calls.

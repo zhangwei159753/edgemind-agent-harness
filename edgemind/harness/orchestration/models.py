@@ -99,3 +99,58 @@ class RoleResult:
         if self.error_type is not None:
             _bounded_text(self.error_type, "error_type", 100)
         object.__setattr__(self, "payload", dict(self.payload))
+
+
+@dataclass(frozen=True)
+class OrchestrationRequest:
+    task_id: str
+    run_id: str
+    objective: str
+    user_input: str
+    mode: str
+    memory_hits: tuple[Any, ...]
+    evidence: tuple[Any, ...]
+    allowed_tools: tuple[str, ...]
+    base_messages: tuple[dict[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        _bounded_text(self.task_id, "task_id", 120)
+        _bounded_text(self.run_id, "run_id", 120)
+        _bounded_text(self.objective, "objective", 2000)
+        _bounded_text(self.user_input, "user_input", 20000, allow_empty=True)
+        if self.mode not in {"auto", "multi"}:
+            raise ValueError("orchestration request mode must be auto or multi")
+        if len(self.memory_hits) > 50 or len(self.evidence) > 50:
+            raise ValueError("orchestration context exceeds 50 items")
+        object.__setattr__(self, "allowed_tools", _string_tuple(self.allowed_tools, "allowed_tools", item_length=120))
+        if not isinstance(self.base_messages, (tuple, list)) or len(self.base_messages) > 20:
+            raise ValueError("base_messages must contain at most 20 messages")
+        if any(not isinstance(message, dict) for message in self.base_messages):
+            raise ValueError("base_messages entries must be objects")
+        object.__setattr__(self, "base_messages", tuple(dict(message) for message in self.base_messages))
+
+
+@dataclass(frozen=True)
+class ExecutorResult:
+    answer: str
+    status: str
+    pending_tool_calls: list[dict[str, Any]]
+    trace: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        _bounded_text(self.answer, "answer", 20000, allow_empty=True)
+        if self.status not in {"succeeded", "awaiting_tool_approval", "failed"}:
+            raise ValueError("unsupported executor status")
+        if not isinstance(self.pending_tool_calls, list) or not all(isinstance(item, dict) for item in self.pending_tool_calls):
+            raise ValueError("pending_tool_calls must be a list of objects")
+        if not isinstance(self.trace, dict):
+            raise ValueError("executor trace must be an object")
+
+
+@dataclass(frozen=True)
+class OrchestrationResult:
+    answer: str
+    status: str
+    trace: dict[str, Any]
+    selected_plan: dict[str, Any] | None = None
+    pending_tool_calls: list[dict[str, Any]] | None = None
