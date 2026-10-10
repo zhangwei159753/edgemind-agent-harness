@@ -63,6 +63,18 @@ Agent 工具页显示 Open-Meteo、Brave Search 和 MCP 的可用状态。天气
 
 故障排查：Brave 显示未配置时检查 .env 文件名、变量拼写并重启进程；认证失败时检查 Brave key 权限/额度；超时或限流时稍后重试。天气无结果或地点候选不唯一时，补充国家、省份或城市全名。
 
+### 有界多 Agent 协作
+
+Agent 工作台提供“自动（默认）”“单 Agent”“多 Agent 协作”三种路由。自动模式只把多阶段任务交给协作流程，普通问答仍走现有单 Agent；显式多 Agent 适合需要先计划、再执行并检查结果的请求，会增加模型调用与延迟。
+
+协作流程由一个协调器按顺序调度 Planner、Researcher、Executor、Reviewer。Planner 输出最多 5 步的结构化计划；Researcher 只整理已有记忆与 RAG 证据 ID，不调用模型；Executor 只获得经计划、策略和工作流 allowlist 交集过滤的工具；Reviewer 检查结论与证据，最多触发一次修订。角色调用预算默认 8。规划输出异常或 Provider 出错时，工作流回退到原单 Agent 执行器；MCP 副作用仍需人工确认。
+
+运行详情展示路由原因、角色 handoff、计划摘要、审核状态和模型调用数，不保存或展示隐藏 CoT。回归样例位于 `tests/data/agent_orchestration_v1.jsonl`，只用注入的本地 Provider/Executor 夹具，不连接 DeepSeek、MCP 或外网：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\edgemind\test_agent_orchestration.py tests\edgemind\test_agent_orchestration_integration.py -q
+```
+
 ## 任务与记忆
 
 1. 在 Agent 工作台输入任务名称和目标，创建任务并保留任务 ID。

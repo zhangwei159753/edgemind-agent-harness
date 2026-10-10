@@ -1,6 +1,6 @@
 # EdgeMind Bounded Multi-Agent Orchestration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a bounded, observable multi-agent workflow for complex tasks while preserving the existing single-agent path and tool safety guarantees.
 
@@ -41,11 +41,11 @@
 - Produce `should_orchestrate(task_objective: str, user_input: str, mode: str = "auto") -> bool`; accepted modes are `auto`, `single`, `multi`. `single` always returns false and `multi` always returns true. `auto` returns true when input contains a sequence marker (`先…再…`, `然后`, `接着`, `依次`), when at least two requested action verbs (`搜索`, `查询`, `检索`, `比较`, `核验`, `总结`, `分析`, `整理`, `生成`) are connected by `并/并且/以及`, or when task objective and user input each contain a different action verb; otherwise it returns false. These routing modes never override security policy.
 - Handoff validation rejects unknown fields, missing IDs/goal, unsupported role/schema, overlong strings/collections, and non-positive budgets.
 
-- [ ] **Step 1: Write failing tests** for valid/invalid `Handoff`, single-step auto routing, multi-step auto routing, and explicit overrides.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration_models.py tests/edgemind/test_agent_orchestration_routing.py -q`; confirm expected import/behavior failures.
-- [ ] **Step 3: Implement** immutable contracts and deterministic router in the two new modules; add no provider calls or persistence here.
-- [ ] **Step 4: Run the same tests**; expect all route and schema boundary cases to pass.
-- [ ] **Step 5: Commit** as `feat: add orchestration contracts and routing`.
+- [x] **Step 1: Write failing tests** for valid/invalid `Handoff`, single-step auto routing, multi-step auto routing, and explicit overrides.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration_models.py tests/edgemind/test_agent_orchestration_routing.py -q`; confirm expected import/behavior failures.
+- [x] **Step 3: Implement** immutable contracts and deterministic router in the two new modules; add no provider calls or persistence here.
+- [x] **Step 4: Run the same tests**; expect all route and schema boundary cases to pass.
+- [x] **Step 5: Commit** as `feat: add orchestration contracts and routing`.
 
 ### Task 2: Sequential role runner and safe handoffs
 
@@ -65,11 +65,11 @@
 - The executor callback receives the current validated handoff and bounded chat messages; the AgentService adapter invokes the existing `_run_tool_loop()` and maps its return tuple to `ExecutorResult`. It is the only route to built-in/MCP execution and must preserve proposal/confirmation semantics.
 - `OrchestrationResult(answer: str, status: str, trace: dict, selected_plan: dict | None, pending_tool_calls: list[dict])`; `ExecutorResult` also carries the executor trace.
 
-- [ ] **Step 1: Write failing fixture tests** for expected role order, bounded payload handoff, evidence-ID preservation, role-call budget, provider errors, malformed output, and no MCP execution on fallback.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration.py -q`; confirm behavior failures without network calls.
-- [ ] **Step 3: Implement** sequential role runner; version prompts; persist only structured handoff/plan/review summaries using `HarnessStore.append_event`; store no hidden CoT/scratchpad. Validate each role payload and cap serialized handoff messages at 60 KiB.
-- [ ] **Step 4: Run the tests** and assert executor invocation remains allowlist-filtered and side effects remain pending confirmation.
-- [ ] **Step 5: Commit** as `feat: add bounded sequential agent orchestration`.
+- [x] **Step 1: Write failing fixture tests** for expected role order, bounded payload handoff, evidence-ID preservation, role-call budget, provider errors, malformed output, and no MCP execution on fallback.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration.py -q`; confirm behavior failures without network calls.
+- [x] **Step 3: Implement** sequential role runner; version prompts; persist only structured handoff/plan/review summaries using `HarnessStore.append_event`; store no hidden CoT/scratchpad. Validate each role payload and cap serialized handoff messages at 60 KiB.
+- [x] **Step 4: Run the tests** and assert executor invocation remains allowlist-filtered and side effects remain pending confirmation.
+- [x] **Step 5: Commit** as `feat: add bounded sequential agent orchestration`.
 
 ### Task 3: AgentService and UI integration
 
@@ -88,21 +88,23 @@
 - `call_count` counts provider calls; the planner, reviewer, and executor contribute their actual calls, while the deterministic Researcher handoff does not. Planner/Researcher/Reviewer receive no tools; Executor receives only tools selected by the validated plan, further intersected with policy and skill allowlists.
 - The UI shows mode and role-stage status in the existing trace panel; no full hidden reasoning text is exposed.
 
-- [ ] **Step 1: Write failing integration tests** for legacy callers, simple auto route, explicit multi route, trace serialization, and awaiting-tool-approval result.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration_integration.py -q`; confirm failures.
-- [ ] **Step 3: Inject** `AgentOrchestrator` into `AgentService`, delegate only when routed, preserve current single-agent behavior and `AgentTurn` shape, then expose concise trace in Gradio.
-- [ ] **Step 4: Run** `python -m pytest tests/edgemind/test_agent_orchestration_integration.py tests/edgemind/test_agent_tools.py tests/edgemind/test_web.py -q`; expect pass with existing callbacks intact.
-- [ ] **Step 5: Commit** as `feat: integrate orchestration with agent workspace`.
+- [x] **Step 1: Write failing integration tests** for legacy callers, simple auto route, explicit multi route, trace serialization, and awaiting-tool-approval result.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_agent_orchestration_integration.py -q`; confirm failures.
+- [x] **Step 3: Inject** `AgentOrchestrator` into `AgentService`, delegate only when routed, preserve current single-agent behavior and `AgentTurn` shape, then expose concise trace in Gradio.
+- [x] **Step 4: Run** `python -m pytest tests/edgemind/test_agent_orchestration_integration.py tests/edgemind/test_agent_tools.py tests/edgemind/test_web.py -q`; expect pass with existing callbacks intact.
+- [x] **Step 5: Commit** as `feat: integrate orchestration with agent workspace`.
 
 ### Task 4: Regression, documentation, and full verification
 
 **Files:**
 - Modify: `README.md`
-- Modify: `tests/data/agent_eval_v1.jsonl` only if additive cases can preserve dataset version compatibility; otherwise create `tests/data/agent_orchestration_v1.jsonl`.
-- Test: `tests/edgemind/test_agent_orchestration_integration.py`
+- Create: `tests/data/agent_orchestration_v1.jsonl` (keeps the existing evaluation dataset contract unchanged)
+- Modify: `tests/edgemind/test_agent_orchestration_integration.py`
+- Modify: `tests/edgemind/test_web.py`
+- Modify: `edgemind/web.py` (expose the route selector in the chat composer)
 
-- [ ] **Step 1: Add fixture cases** for simple routing, multi-step handoff, provider failure, and reviewer evidence gap.
-- [ ] **Step 2: Run targeted tests** and ensure fixture mode makes no external DeepSeek/MCP/network calls.
-- [ ] **Step 3: Document** opt-in/auto routing, role boundaries, trace fields, budgets, and safety behavior in README.
-- [ ] **Step 4: Run** `python -m pytest tests/edgemind -q`; expect all tests pass and no live API is required.
-- [ ] **Step 5: Commit** as `docs: document multi-agent orchestration`.
+- [x] **Step 1: Add fixture cases** for simple routing, multi-step handoff, provider failure, and reviewer evidence gap.
+- [x] **Step 2: Run targeted tests** and ensure fixture mode makes no external DeepSeek/MCP/network calls.
+- [x] **Step 3: Document** opt-in/auto routing, role boundaries, trace fields, budgets, and safety behavior in README.
+- [x] **Step 4: Run** `python -m pytest tests/edgemind -q`; expect all tests pass and no live API is required.
+- [x] **Step 5: Commit** as `docs: document multi-agent orchestration`.

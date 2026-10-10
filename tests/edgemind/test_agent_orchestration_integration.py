@@ -1,8 +1,9 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from edgemind.harness.agent import AgentService
-from edgemind.harness.orchestration import AgentOrchestrator
+from edgemind.harness.orchestration import AgentOrchestrator, ExecutorResult, OrchestrationRequest, should_orchestrate
 from edgemind.harness.store import HarnessStore
 from edgemind.harness.tasks import TaskService
 from edgemind.harness.tools import ToolRegistry
@@ -21,7 +22,13 @@ class FakeClient:
 
     def create(self, **kwargs):
         self.requests.append(kwargs)
-        return completion(**self.replies.pop(0))
+        reply = self.replies.pop(0)
+        if "error" in reply:
+            error_name = reply["error"]
+            if error_name == "TimeoutError":
+                raise TimeoutError("fixture provider timeout")
+            raise RuntimeError("fixture provider error")
+        return completion(**reply)
 
 
 class EmptyMcp:
@@ -124,3 +131,48 @@ def test_multi_route_preserves_pending_mcp_confirmation_context(tmp_path):
         "proposal_id": turn.pending_tool_calls[0]["proposal_id"], "tool_call_id": "mcp-call-1",
     }]
     assert turn.trace["orchestration"]["review_status"] == "skipped_executor_status"
+
+
+def test_versioned_orchestration_fixtures_replay_offline(tmp_path):
+    fixture_path = Path("tests/data/agent_orchestration_v1.jsonl")
+    records = [json.loads(line) for line in fixture_path.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["record_type"] == "manifest"
+    cases = records[1:]
+    store = HarnessStore(tmp_path / "fixture.sqlite3")
+
+    for case in cases:
+        if case["scenario"] == "routing":
+            actual = should_orchestrate(case["objective"], case["input"])
+            assert ("multi" if actual else "single") == case["expected"]["route"]
+            continue
+
+        task = TaskService(store).create(case["example_id"], case["objective"])
+        fixture = case["fixture"]
+        if case["scenario"] == "provider_failure":
+            replies = [{"error": fixture["planner_error"]}]
+            evidence = ()
+        else:
+            replies = [
+                {"content": json.dumps(fixture["planner"]), "calls": []},
+                {"content": json.dumps(fixture["reviewer"]), "calls": []},
+            ]
+            evidence = tuple(fixture["evidence"])
+        client = FakeClient(replies)
+        orchestrator = AgentOrchestrator(client, store)
+        request = OrchestrationRequest(
+            task.task_id, case["example_id"], case["objective"], case["input"], "multi",
+            (), evidence, (), ({"role": "system", "content": "test"},
+                               {"role": "user", "content": case["input"]}),
+        )
+
+        def executor(handoff, messages):
+            answer = fixture.get("executor_answer", "")
+            return ExecutorResult(answer, "succeeded", [], {"tool_calls": []})
+
+        result = orchestrator.run(request, executor, {})
+        assert result.status == case["expected"]["status"]
+        assert result.trace.get("fallback_reason") == case["expected"].get("fallback_reason")
+        assert result.trace["review_status"] == case["expected"]["review_status"], result.trace
+        assert len(client.requests) <= 3
+        if "mcp_calls" in case["expected"]:
+            assert case["expected"]["mcp_calls"] == 0
