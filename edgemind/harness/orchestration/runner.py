@@ -91,10 +91,12 @@ class AgentOrchestrator:
 
     @staticmethod
     def _new_handoff(request: OrchestrationRequest, role: str, goal: str,
-                     evidence_ids: tuple[str, ...], remaining_calls: int) -> Handoff:
+                     evidence_ids: tuple[str, ...], remaining_calls: int,
+                     allowed_tools: tuple[str, ...] | None = None) -> Handoff:
         schema = f"{role}-v1"
         return Handoff(request.run_id, request.task_id, role, goal[:4000], evidence_ids[:50],
-                       request.allowed_tools, max(1, remaining_calls), schema)
+                       request.allowed_tools if allowed_tools is None else allowed_tools,
+                       max(1, remaining_calls), schema)
 
     def _invoke_role(self, role: str, handoff: Handoff, context: dict[str, Any], stage_ms: dict[str, float]) -> RoleResult:
         prompt = PLANNER_PROMPT if role == "planner" else REVIEWER_PROMPT
@@ -208,6 +210,7 @@ class AgentOrchestrator:
         except Exception as exc:
             result = ExecutorResult("Agent 执行阶段失败，未能继续完成任务。", "failed", [],
                                     {"error_type": type(exc).__name__})
+        trace["call_count"] += result.tool_rounds if result.status == "awaiting_tool_approval" else result.tool_rounds + 1
         self._append_handoff(request, trace, handoff, result.status, result.trace.get("error_type"))
         return result
 
@@ -222,20 +225,22 @@ class AgentOrchestrator:
         result = self._execute(request, executor, handoff, list(request.base_messages), trace)
         trace["review_status"] = "skipped_fallback"
         trace["status"] = result.status
-        return OrchestrationResult(result.answer, result.status, trace, None, result.pending_tool_calls)
+        return OrchestrationResult(result.answer, result.status, trace, None,
+                                   result.pending_tool_calls, result)
 
     def run(self, request: OrchestrationRequest, executor: Callable[[Handoff, list[dict]], ExecutorResult],
             stage_ms: dict[str, float]) -> OrchestrationResult:
         trace = {"run_id": request.run_id, "task_id": request.task_id, "mode": "multi",
                  "prompt_version": PROMPT_VERSION, "handoffs": [], "role_calls": 0,
-                 "revision_count": 0, "review_status": "pending"}
+                 "call_count": 0, "revision_count": 0, "review_status": "pending"}
         context = self._context(request)
         planner_handoff = self._new_handoff(request, "planner", request.objective,
                                             tuple([item["memory_id"] for item in context["memories"]]
                                                   + [item["chunk_id"] for item in context["evidence"]]),
-                                            self.role_call_budget)
+                                            self.role_call_budget, allowed_tools=())
         planner = self._invoke_role("planner", planner_handoff, context, stage_ms)
         trace["role_calls"] += 1
+        trace["call_count"] += 1
         self._append_handoff(request, trace, planner_handoff, planner.status, planner.error_type)
         if planner.status != "succeeded":
             return self._fallback(request, executor, trace, context, planner.error_type or "invalid_role_output")
@@ -245,7 +250,7 @@ class AgentOrchestrator:
         researcher_handoff = self._new_handoff(request, "researcher", plan["summary"],
                                                tuple([item["memory_id"] for item in context["memories"]]
                                                      + [item["chunk_id"] for item in context["evidence"]]),
-                                               self.role_call_budget - trace["role_calls"])
+                                               self.role_call_budget - trace["role_calls"], allowed_tools=())
         research_ids = tuple(dict.fromkeys(
             evidence_id for step in plan["steps"] for evidence_id in step["expected_evidence"]
         ))
@@ -268,13 +273,18 @@ class AgentOrchestrator:
                           "Selected plan and evidence IDs: " + plan_text}
         insert_at = 1 if messages and messages[0].get("role") == "system" else 0
         messages.insert(insert_at, system_message)
+        selected_tools = tuple(dict.fromkeys(
+            tool for step in plan["steps"] for tool in step["expected_tools"]
+        ))
         executor_handoff = self._new_handoff(request, "executor", plan["summary"], research_ids,
-                                             self.role_call_budget - trace["role_calls"])
+                                             self.role_call_budget - trace["role_calls"],
+                                             allowed_tools=selected_tools)
         result = self._execute(request, executor, executor_handoff, messages, trace)
         if result.status != "succeeded":
             trace["review_status"] = "skipped_executor_status"
             trace["status"] = result.status
-            return OrchestrationResult(result.answer, result.status, trace, plan, result.pending_tool_calls)
+            return OrchestrationResult(result.answer, result.status, trace, plan,
+                                       result.pending_tool_calls, result)
 
         review_context = {"task_objective": request.objective[:2000], "user_request": request.user_input[:4000],
                           "plan": plan, "evidence_ids": list(research_ids), "answer": result.answer[:6000],
@@ -285,9 +295,11 @@ class AgentOrchestrator:
                 trace["review_status"] = "skipped_budget"
                 break
             reviewer_handoff = self._new_handoff(request, "reviewer", "Review answer quality and evidence support",
-                                                 research_ids, self.role_call_budget - trace["role_calls"])
+                                                 research_ids, self.role_call_budget - trace["role_calls"],
+                                                 allowed_tools=())
             review = self._invoke_role("reviewer", reviewer_handoff, review_context, stage_ms)
             trace["role_calls"] += 1
+            trace["call_count"] += 1
             self._append_handoff(request, trace, reviewer_handoff, review.status, review.error_type)
             if review.status != "succeeded":
                 trace["review_status"] = "unavailable"
@@ -310,7 +322,8 @@ class AgentOrchestrator:
                                 + review.payload["revision_instruction"]}
             revised_messages = list(messages) + [revision_message]
             executor_handoff = self._new_handoff(request, "executor", plan["summary"], research_ids,
-                                                 self.role_call_budget - trace["role_calls"])
+                                                 self.role_call_budget - trace["role_calls"],
+                                                 allowed_tools=selected_tools)
             result = self._execute(request, executor, executor_handoff, revised_messages, trace)
             if result.status != "succeeded":
                 trace["review_status"] = "skipped_executor_status"
@@ -319,4 +332,5 @@ class AgentOrchestrator:
             review_context["executor_status"] = result.status
             review_context["tool_trace"] = result.trace.get("tool_calls", [])[:20]
         trace["status"] = result.status
-        return OrchestrationResult(result.answer, result.status, trace, plan, result.pending_tool_calls)
+        return OrchestrationResult(result.answer, result.status, trace, plan,
+                                   result.pending_tool_calls, result)

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
@@ -136,6 +136,11 @@ class ExecutorResult:
     status: str
     pending_tool_calls: list[dict[str, Any]]
     trace: dict[str, Any]
+    tool_call_data: dict[str, Any] | None = None
+    tool_context: list[dict[str, Any]] | None = None
+    proposal_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_rounds: int = 0
+    tool_warning: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.answer, "answer", 20000, allow_empty=True)
@@ -145,6 +150,14 @@ class ExecutorResult:
             raise ValueError("pending_tool_calls must be a list of objects")
         if not isinstance(self.trace, dict):
             raise ValueError("executor trace must be an object")
+        if self.tool_context is not None and not isinstance(self.tool_context, list):
+            raise ValueError("tool_context must be a list or None")
+        if not isinstance(self.proposal_calls, list) or not all(isinstance(item, dict) for item in self.proposal_calls):
+            raise ValueError("proposal_calls must be a list of objects")
+        if not isinstance(self.tool_rounds, int) or isinstance(self.tool_rounds, bool) or self.tool_rounds < 0:
+            raise ValueError("tool_rounds must be a non-negative integer")
+        if self.tool_warning is not None:
+            _bounded_text(self.tool_warning, "tool_warning", 100)
 
 
 @dataclass(frozen=True)
@@ -154,3 +167,4 @@ class OrchestrationResult:
     trace: dict[str, Any]
     selected_plan: dict[str, Any] | None = None
     pending_tool_calls: list[dict[str, Any]] | None = None
+    executor_result: ExecutorResult | None = None

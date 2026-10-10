@@ -80,6 +80,11 @@ def test_orchestrator_hands_off_planner_researcher_executor_reviewer_in_order(tm
     assert result.status == "succeeded"
     assert [item["role"] for item in result.trace["handoffs"]] == ["planner", "researcher", "executor", "reviewer"]
     assert seen[0][0].role == "executor"
+    assert seen[0][0].allowed_tools == ("edgemind__web_search",)
+    handoffs = result.trace["handoffs"]
+    assert next(item for item in handoffs if item["role"] == "planner")["allowed_tools"] == []
+    assert next(item for item in handoffs if item["role"] == "researcher")["allowed_tools"] == []
+    assert next(item for item in handoffs if item["role"] == "reviewer")["allowed_tools"] == []
     assert set(seen[0][0].evidence_ids) == {"doc-1", "memory-1"}
     assert "step-1" in str(seen[0][1])
     assert result.trace["review_status"] == "accepted"

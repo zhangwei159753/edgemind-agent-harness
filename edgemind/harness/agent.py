@@ -16,13 +16,14 @@ from .tools import ToolRegistry
 from .builtin_tools import BuiltinToolRegistry
 from .policies import AgentPolicy, AgentPolicyService
 from .skills import SkillRegistry, SkillDefinition
+from .orchestration import AgentOrchestrator, ExecutorResult, OrchestrationRequest, should_orchestrate
 
 
 class AgentService:
     def __init__(self, store: HarnessStore, client=None, media: MediaProcessor | None = None,
                  memory: MemoryService | None = None, tools: ToolRegistry | None = None,
                  rag_service=None, builtin_tools: BuiltinToolRegistry | None = None,
-                 policy_service: AgentPolicyService | None = None):
+                 policy_service: AgentPolicyService | None = None, orchestrator: AgentOrchestrator | None = None):
         self.store = store
         self.client = client
         self.media = media or MediaProcessor()
@@ -33,11 +34,28 @@ class AgentService:
         self.skills = SkillRegistry()
         self.rag_service = rag_service
         self.policy_service = policy_service
+        self.orchestrator = orchestrator
 
     def _client(self):
         if self.client is None:
             self.client = create_deepseek_client(DeepSeekSettings.from_env())
         return self.client
+
+    def _allowed_tool_names(self, skill: SkillDefinition | None, policy: AgentPolicy | None) -> tuple[str, ...]:
+        tools = []
+        for registry in (self.builtin_tools, self.tools):
+            try:
+                tools.extend(registry.model_tools())
+            except Exception:
+                continue
+        names = {item.get("function", {}).get("name") for item in tools
+                 if isinstance(item, dict) and isinstance(item.get("function"), dict)}
+        names.discard(None)
+        if policy is not None:
+            names.intersection_update(policy.tool_allowlist)
+        if skill is not None:
+            names.intersection_update(skill.allowed_tools)
+        return tuple(sorted(names))
 
 
     @staticmethod
@@ -93,7 +111,8 @@ class AgentService:
                        stage_ms: dict, user_text: str,
                        on_tool_status: Callable[[str], None] | None = None,
                        skill: SkillDefinition | None = None, policy: AgentPolicy | None = None,
-                       trace_collector: list[dict] | None = None):
+                       trace_collector: list[dict] | None = None,
+                       allowed_tool_override: tuple[str, ...] | None = None):
         tool_warning = None
         try:
             mcp_tools = self.tools.model_tools()
@@ -112,6 +131,9 @@ class AgentService:
         if skill is not None:
             model_tools = [item for item in model_tools
                            if item.get("function", {}).get("name") in skill.allowed_tools]
+        if allowed_tool_override is not None:
+            model_tools = [item for item in model_tools
+                           if item.get("function", {}).get("name") in allowed_tool_override]
         enabled_tool_names = {item.get("function", {}).get("name") for item in model_tools}
         max_rounds = min(policy.max_tool_rounds if policy else 3,
                          skill.max_tool_rounds if skill else 3)
@@ -259,7 +281,8 @@ class AgentService:
 
     def run_turn(self, task_id: str, text: str = "", image_paths=None, audio_path: str | None = None,
                  display_text: str | None = None, skill_id: str | None = None,
-                 on_tool_status: Callable[[str], None] | None = None) -> AgentTurn:
+                 on_tool_status: Callable[[str], None] | None = None,
+                 orchestration_mode: str = "auto") -> AgentTurn:
         run_id, started = str(uuid.uuid4()), time.perf_counter()
         task = self.store.get_task(task_id)
         if task is None:
@@ -346,11 +369,70 @@ class AgentService:
                 if policy.output_constraints.get("require_citations"):
                     system += "\n策略要求：对知识库结论附带对应证据标识。"
             messages = [{"role": "system", "content": system}, {"role": "user", "content": content_parts}]
-            (answer, status, proposals, tool_call_data, tool_calls_trace, tool_rounds,
-             tool_warning, tool_context, proposal_calls) = self._run_tool_loop(
-                messages, task_id, run_id, stage_ms, user_text, on_tool_status, selected_skill, policy,
-                trace_collector=tool_calls_trace,
-            )
+            if orchestration_mode not in {"auto", "single", "multi"}:
+                raise ValueError("orchestration_mode must be auto, single, or multi")
+            route_multi = should_orchestrate(context.get("objective", ""), user_text, orchestration_mode)
+            route_reason = ("explicit_multi_route" if orchestration_mode == "multi" else
+                            "explicit_single_route" if orchestration_mode == "single" else
+                            "multi_step_auto_route" if route_multi else "simple_request")
+            orchestration_trace = {
+                "mode": "multi" if route_multi else "single", "route_reason": route_reason,
+                "handoffs": [], "selected_plan_summary": None,
+                "review_status": "not_run", "call_count": 0,
+            }
+            if route_multi:
+                if self.orchestrator is None:
+                    self.orchestrator = AgentOrchestrator(self._client(), self.store)
+                else:
+                    # Reuse the same configured client used by the executor when it is created lazily.
+                    self._client()
+                orchestration_request = OrchestrationRequest(
+                    task_id=task_id, run_id=run_id, objective=str(context.get("objective") or context.get("title") or "Task"),
+                    user_input=user_text, mode="multi" if orchestration_mode == "multi" else "auto",
+                    memory_hits=tuple(memories), evidence=tuple(evidence),
+                    allowed_tools=self._allowed_tool_names(selected_skill, policy),
+                    base_messages=tuple(messages),
+                )
+
+                def execute_handoff(handoff, execution_messages):
+                    calls_trace = []
+                    (executor_answer, executor_status, pending_calls, call_data, calls_trace,
+                     rounds, warning, tool_context_value, proposal_calls_value) = self._run_tool_loop(
+                        execution_messages, task_id, run_id, stage_ms, user_text, on_tool_status,
+                        selected_skill, policy, trace_collector=calls_trace,
+                        allowed_tool_override=handoff.allowed_tools,
+                    )
+                    return ExecutorResult(
+                        executor_answer, executor_status, pending_calls,
+                        {"tool_calls": calls_trace}, call_data, tool_context_value,
+                        proposal_calls_value, rounds, warning,
+                    )
+
+                orchestration_result = self.orchestrator.run(orchestration_request, execute_handoff, stage_ms)
+                answer, status = orchestration_result.answer, orchestration_result.status
+                proposals = orchestration_result.pending_tool_calls or []
+                executor_result = orchestration_result.executor_result
+                tool_call_data = executor_result.tool_call_data if executor_result else None
+                tool_context = executor_result.tool_context if executor_result else None
+                proposal_calls = executor_result.proposal_calls if executor_result else []
+                tool_rounds = executor_result.tool_rounds if executor_result else 0
+                tool_warning = executor_result.tool_warning if executor_result else None
+                tool_calls_trace = (executor_result.trace.get("tool_calls", [])
+                                    if executor_result else [])
+                orchestration_trace = {
+                    "mode": "multi", "route_reason": route_reason,
+                    "handoffs": orchestration_result.trace.get("handoffs", []),
+                    "selected_plan_summary": orchestration_result.trace.get("selected_plan_summary"),
+                    "review_status": orchestration_result.trace.get("review_status", "unavailable"),
+                    "call_count": orchestration_result.trace.get("call_count", 0),
+                    "fallback_reason": orchestration_result.trace.get("fallback_reason"),
+                }
+            else:
+                (answer, status, proposals, tool_call_data, tool_calls_trace, tool_rounds,
+                 tool_warning, tool_context, proposal_calls) = self._run_tool_loop(
+                    messages, task_id, run_id, stage_ms, user_text, on_tool_status, selected_skill, policy,
+                    trace_collector=tool_calls_trace,
+                )
             if policy is not None:
                 max_chars = policy.output_constraints["max_output_chars"]
                 answer = answer[:max_chars]
@@ -369,7 +451,8 @@ class AgentService:
                                       for item in evidence], "attachments": metadata,
                      "tool_proposals": proposals, "tool_calls": tool_calls_trace,
                      "tool_rounds": tool_rounds, "skill_id": skill_id,
-                     "skill_version": selected_skill.version if selected_skill else None, "stage_ms": stage_ms}
+                     "skill_version": selected_skill.version if selected_skill else None, "stage_ms": stage_ms,
+                     "orchestration": orchestration_trace}
             if policy is not None:
                 policy_payload = {
                     "policy_id": policy.policy_id, "version": policy.version,

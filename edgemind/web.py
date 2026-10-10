@@ -597,7 +597,7 @@ def build_demo():
                         correction = gr.Textbox(label="纠正或补充", placeholder="指出需要修正的事实或补充的信息…", lines=2)
                         apply_correction = gr.Button("提交纠错并重答", elem_classes=["secondary"])
                         last_run_id = gr.Textbox(label="当前 Run ID", interactive=False)
-                        turn_trace = gr.JSON(label="运行轨迹 · 记忆、RAG 证据与工具提案")
+                        turn_trace = gr.JSON(label="运行轨迹 · Agent 路由、角色协作、证据与工具提案")
                     with gr.Accordion("结果反馈", open=False, elem_id="ed-feedback"):
                         gr.Markdown("反馈会关联到当前 Run，并用于评估 Agent 质量；不会自动修改记忆或策略。")
                         feedback_outcome = gr.Radio(label="本轮结果", choices=["success", "partial", "failure"], value="success")

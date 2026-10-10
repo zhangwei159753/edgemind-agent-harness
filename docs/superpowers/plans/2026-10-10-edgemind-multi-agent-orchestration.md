@@ -75,6 +75,8 @@
 
 **Files:**
 - Modify: `edgemind/harness/agent.py`
+- Modify: `edgemind/harness/orchestration/models.py` (preserve executor approval continuation state)
+- Modify: `edgemind/harness/orchestration/runner.py` (report provider call count and role tool scope)
 - Modify: `edgemind/web.py`
 - Test: `tests/edgemind/test_agent_tools.py`
 - Test: `tests/edgemind/test_web.py`
@@ -83,6 +85,7 @@
 **Interfaces:**
 - Keep the existing `AgentService.run_turn(...) -> AgentTurn` signature compatible; add optional `orchestration_mode="auto"` as a trailing keyword.
 - Add `orchestration` trace fields: `mode`, `route_reason`, `handoffs`, `selected_plan_summary`, `review_status`, and `call_count`.
+- `call_count` counts provider calls; the planner, reviewer, and executor contribute their actual calls, while the deterministic Researcher handoff does not. Planner/Researcher/Reviewer receive no tools; Executor receives only tools selected by the validated plan, further intersected with policy and skill allowlists.
 - The UI shows mode and role-stage status in the existing trace panel; no full hidden reasoning text is exposed.
 
 - [ ] **Step 1: Write failing integration tests** for legacy callers, simple auto route, explicit multi route, trace serialization, and awaiting-tool-approval result.
