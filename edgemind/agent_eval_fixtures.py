@@ -23,6 +23,10 @@ class _Completions:
 
     def create(self, **kwargs):
         response = self.responses.pop(0)
+        if response.get("error") == "TimeoutError":
+            raise TimeoutError("fixture provider timeout")
+        if response.get("error") == "ConnectionError":
+            raise ConnectionError("fixture provider unavailable")
         calls = [_call(item["name"], item.get("arguments", {}), item.get("id", f"call-{index}"))
                  for index, item in enumerate(response.get("tool_calls", []))]
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(

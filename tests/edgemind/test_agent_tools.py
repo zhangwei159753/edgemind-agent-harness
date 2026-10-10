@@ -14,8 +14,8 @@ def tool_call(name, arguments, call_id="call-1"):
     )
 
 
-def assistant(content=None, calls=None):
-    return SimpleNamespace(content=content, tool_calls=calls or [])
+def assistant(content=None, calls=None, usage=None):
+    return SimpleNamespace(content=content, tool_calls=calls or [], usage=usage)
 
 
 class FakeCompletions:
@@ -26,7 +26,7 @@ class FakeCompletions:
     def create(self, **kwargs):
         self.requests.append(kwargs)
         message = self.responses.pop(0)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=message.usage)
 
 
 class FakeClient:
@@ -126,6 +126,18 @@ def test_agent_executes_builtin_tool_and_returns_result_to_deepseek(tmp_path):
     assert turn.trace["tool_rounds"] == 1
     assert turn.trace["tool_calls"][0]["status"] == "succeeded"
     assert progress == ["正在调用 get_weather"]
+
+
+def test_agent_trace_sums_provider_token_usage_when_available(tmp_path):
+    client = FakeClient([assistant(content="Hello", usage=SimpleNamespace(
+        prompt_tokens=12, completion_tokens=4, total_tokens=16))])
+    service, _, task = build_service(tmp_path, client)
+
+    turn = service.run_turn(task.task_id, "Say hello", orchestration_mode="single")
+
+    assert turn.trace["orchestration"]["call_count"] == 1
+    assert turn.trace["orchestration"]["token_usage"] == {
+        "prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16}
 
 
 def test_agent_executes_multiple_builtin_calls_from_one_model_response(tmp_path):
