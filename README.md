@@ -99,6 +99,14 @@ python -m edgemind --state .data/edgemind.sqlite3 memory export --output .data/m
 | Semantic | 稳定事实、偏好和长期目标 | 用户审核后参与检索 |
 | Procedural | 经验证的可复用经验和步骤 | 用户审核后参与检索 |
 
+### 记忆关系图
+
+记忆图使用现有四层记忆作为节点，关系边存入 SQLite；不引入图数据库。支持 `derived_from`、`supports`、`contradicts`、`used_in` 和 `similar_to`。关系必须先创建为待审核边；只有两个端点记忆都已批准、且用户批准关系后，关系才可参与检索。拒绝关系不会参与扩展；删除记忆时关联边由 SQLite 外键级联删除。`similar_to` 会规范端点顺序，避免反向重复。
+
+Agent 工作台默认启用最多 12 个节点、单跳扩展；公共 `MemoryService.retrieve()` 默认保持旧行为，可显式传 `graph_expansion=True` 获取图扩展。应用侧可用 `AgentService(..., memory_graph_expansion=False)` 关闭。相关节点仍受当前任务范围与 memory tag allow/deny 过滤约束。关系分数使用种子记忆分数 × 边置信度 × 关系权重；`contradicts` 只生成冲突轨迹，不作为正向候选。运行轨迹保存关系 ID、类型和分数组件，不保存记忆全文。
+
+在“记忆管理 → 记忆关系图”中填写来源/目标记忆 ID、关系与置信度，创建待审核边；在列表中检查后，用边 ID 批准或拒绝。schema v5 会在应用启动时从旧版本向前追加关系表，保留已有任务、记忆、反馈数据。`tests/data/memory_graph_v1.jsonl` 是隔离 SQLite 夹具，不会触碰真实 `.data/edgemind.sqlite3`。
+
 ## Agent 质量与经验闭环
 
 EdgeMind 将“自进化”限定为有证据和人工治理的策略改进流程：记录运行结果与记忆效用反馈，创建不可变策略候选，在固定回归集上和其父策略对比，通过安全/质量门禁后由用户明确晋级。系统不会自行训练模型、改源码、自动修改已批准记忆或无限循环运行。

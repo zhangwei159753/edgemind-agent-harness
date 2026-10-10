@@ -1,6 +1,6 @@
 # EdgeMind Memory Graph Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add provenance-aware, human-governed relations between existing memory items and use bounded graph expansion to improve retrieval explanations.
 
@@ -45,11 +45,11 @@
 - Store API: `put_memory_edge(edge) -> MemoryEdge`, `get_memory_edge(edge_id) -> MemoryEdge | None`, `list_memory_edges(memory_id, status="approved", limit=100) -> list[MemoryEdge]`, `review_memory_edge(edge_id, status) -> MemoryEdge`, `delete_memory_edges_for_memory(memory_id) -> int`.
 - Canonicalize endpoint order for `similar_to` and enforce unique `(source_memory_id,target_memory_id,relation)`.
 
-- [ ] **Step 1: Write failing tests** for v4→v5 migration, reopen idempotency, invalid relation/status/confidence/self-edge, duplicate insert, similar-to reverse duplicate, FK cascade.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_memory_graph_store.py tests/edgemind/test_harness.py -q`; confirm expected failures.
-- [ ] **Step 3: Implement** dataclass and transactional additive migration/methods; update schema-version assertions to 5 only where they represent current schema.
-- [ ] **Step 4: Run the tests**; verify existing task/memory data survives a migration fixture.
-- [ ] **Step 5: Commit** as `feat: persist governed memory graph edges`.
+- [x] **Step 1: Write failing tests** for v4→v5 migration, reopen idempotency, invalid relation/status/confidence/self-edge, duplicate insert, similar-to reverse duplicate, FK cascade.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_memory_graph_store.py tests/edgemind/test_harness.py -q`; confirm expected failures.
+- [x] **Step 3: Implement** dataclass and transactional additive migration/methods; update schema-version assertions to 5 only where they represent current schema.
+- [x] **Step 4: Run the tests**; verify existing task/memory data survives a migration fixture.
+- [x] **Step 5: Commit** as `feat: persist governed memory graph edges`.
 
 ### Task 2: Edge governance and bounded retrieval expansion
 
@@ -69,11 +69,11 @@
 - Add `MemoryService.retrieve_with_trace(query: str, ..., graph_expansion: bool = False, graph_max_nodes: int = 12) -> MemoryRetrievalResult(hits: list[MemoryHit], graph_paths: list[dict])`; existing `retrieve()` returns only `hits` by delegating to this method.
 - Expanded-hit score is `seed.score * edge.confidence * relation_weight`, deduplicated by maximum score; relation weights are `supports=0.9`, `derived_from=0.8`, `used_in=0.7`, `similar_to=0.6`. `contradicts` never adds a positive hit; it returns a conflict path attached to the trace for review.
 
-- [ ] **Step 1: Write failing tests** for pending edge exclusion, approved one-hop expansion, confidence/relation weighting, edge explanation, disabled-path identity, max-node cap, and missing/deleted endpoints.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_memory_graph_retrieval.py -q`; confirm failures.
-- [ ] **Step 3: Implement** graph service and bounded seed expansion; do not call an LLM during retrieval or create edges implicitly from generated content. Edge endpoints are memory IDs only; task/evidence/run identifiers remain provenance metadata and do not become graph nodes in this release.
-- [ ] **Step 4: Run tests** and verify existing `MemoryService.retrieve()` callers return equivalent results with default arguments.
-- [ ] **Step 5: Commit** as `feat: add governed graph memory retrieval`.
+- [x] **Step 1: Write failing tests** for pending edge exclusion, approved one-hop expansion, confidence/relation weighting, edge explanation, disabled-path identity, max-node cap, and missing/deleted endpoints.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_memory_graph_retrieval.py -q`; confirm failures.
+- [x] **Step 3: Implement** graph service and bounded seed expansion; do not call an LLM during retrieval or create edges implicitly from generated content. Edge endpoints are memory IDs only; task/evidence/run identifiers remain provenance metadata and do not become graph nodes in this release.
+- [x] **Step 4: Run tests** and verify existing `MemoryService.retrieve()` callers return equivalent results with default arguments.
+- [x] **Step 5: Commit** as `feat: add governed graph memory retrieval`.
 
 ### Task 3: Review UI, trace, and graph fixtures
 
@@ -88,11 +88,11 @@
 - Review UI provides list/pending status, source/target IDs, relation, confidence and approve/reject actions; unresolved IDs fail closed.
 - Agent trace adds `memory_graph_paths: list[dict]` with IDs, relation and score components only (bounded list), never full hidden reasoning.
 
-- [ ] **Step 1: Write failing callback tests** for review decisions, rejected-edge exclusion and concise path rendering.
-- [ ] **Step 2: Run** `python -m pytest tests/edgemind/test_memory_graph_ui.py tests/edgemind/test_web.py -q`; confirm failures.
-- [ ] **Step 3: Add** review controls and graph trace output using existing memory review patterns.
-- [ ] **Step 4: Add fixture cases** where a connected approved memory supplies needed context and a pending edge is ignored; assert fixture mode never writes production DB.
-- [ ] **Step 5: Commit** as `feat: expose memory graph review and trace`.
+- [x] **Step 1: Write failing callback tests** for review decisions, rejected-edge exclusion and concise path rendering.
+- [x] **Step 2: Run** `python -m pytest tests/edgemind/test_memory_graph_ui.py tests/edgemind/test_web.py -q`; confirm failures.
+- [x] **Step 3: Add** review controls and graph trace output using existing memory review patterns.
+- [x] **Step 4: Add fixture cases** where a connected approved memory supplies needed context and a pending edge is ignored; assert fixture mode never writes production DB.
+- [x] **Step 5: Commit** as `feat: expose memory graph review and trace`.
 
 ### Task 4: Migration and retrieval regression
 
@@ -102,7 +102,7 @@
 - Test: `tests/edgemind/test_memory_graph_retrieval.py`
 - Test: all `tests/edgemind`
 
-- [ ] **Step 1: Add regression** for current `.data/edgemind.sqlite3`-style schema v4 fixture with pre-existing memories and feedback; assert no data loss.
-- [ ] **Step 2: Document** relation types, approval, retrieval cap, disabling behavior, and migration.
-- [ ] **Step 3: Run** `python -m pytest tests/edgemind -q`; expect all tests pass.
-- [ ] **Step 4: Commit** as `docs: document memory graph behavior`.
+- [x] **Step 1: Add regression** for current `.data/edgemind.sqlite3`-style schema v4 fixture with pre-existing memories and feedback; assert no data loss.
+- [x] **Step 2: Document** relation types, approval, retrieval cap, disabling behavior, and migration.
+- [x] **Step 3: Run** `python -m pytest tests/edgemind -q`; expect all tests pass.
+- [x] **Step 4: Commit** as `docs: document memory graph behavior`.
