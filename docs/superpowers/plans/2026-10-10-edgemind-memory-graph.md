@@ -55,6 +55,7 @@
 
 **Files:**
 - Modify: `edgemind/harness/memory.py`
+- Modify: `edgemind/harness/__init__.py` (public graph/retrieval result exports)
 - Create: `edgemind/harness/graph.py`
 - Test: `tests/edgemind/test_harness.py`
 - Create: `tests/edgemind/test_memory_graph_retrieval.py`

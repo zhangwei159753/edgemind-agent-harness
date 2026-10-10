@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from .models import MEMORY_LAYERS, MemoryHit, MemoryItem
+from .graph import MemoryGraphService, MemoryRetrievalResult
 from .store import HarnessStore
 
 
@@ -55,9 +56,22 @@ class MemoryService:
     def retrieve(self, query: str, task_id: str | None = None, limit: int = 8,
                  include_pending: bool = False, layer_weights: dict[str, float] | None = None,
                  time_decay_days: float | None = None, allowed_tags: tuple[str, ...] = (),
-                 excluded_tags: tuple[str, ...] = ()) -> list[MemoryHit]:
+                 excluded_tags: tuple[str, ...] = (), graph_expansion: bool = False,
+                 graph_max_nodes: int = 12) -> list[MemoryHit]:
+        return self.retrieve_with_trace(
+            query, task_id=task_id, limit=limit, include_pending=include_pending,
+            layer_weights=layer_weights, time_decay_days=time_decay_days,
+            allowed_tags=allowed_tags, excluded_tags=excluded_tags,
+            graph_expansion=graph_expansion, graph_max_nodes=graph_max_nodes,
+        ).hits
+
+    def retrieve_with_trace(self, query: str, task_id: str | None = None, limit: int = 8,
+                            include_pending: bool = False, layer_weights: dict[str, float] | None = None,
+                            time_decay_days: float | None = None, allowed_tags: tuple[str, ...] = (),
+                            excluded_tags: tuple[str, ...] = (), graph_expansion: bool = False,
+                            graph_max_nodes: int = 12) -> MemoryRetrievalResult:
         if not query.strip() or limit <= 0:
-            return []
+            return MemoryRetrievalResult([], [])
         defaults = {"working": 1.15, "episodic": 1.0, "semantic": 1.1, "procedural": 1.0}
         weights = defaults if layer_weights is None else dict(layer_weights)
         if set(weights) != set(MEMORY_LAYERS) or any(
@@ -71,7 +85,7 @@ class MemoryService:
         ):
             raise ValueError("time_decay_days must be a positive finite number")
         if not query.strip() or limit <= 0:
-            return []
+            return MemoryRetrievalResult([], [])
         lexical = self.store.search_memories(query, limit=max(limit * 3, 20), include_pending=include_pending, task_id=task_id)
         lexical_scores = {item.memory_id: score for item, score in lexical}
         semantic_scores = {}
@@ -106,7 +120,13 @@ class MemoryService:
             fused = (0.55 * lex_score + 0.35 * sem_score + 0.1 * recency) * layer_weight
             hits.append(MemoryHit(item, fused, {"lexical": lex_score, "semantic": sem_score,
                                                 "recency": recency, "layer_weight": layer_weight}))
-        return sorted(hits, key=lambda hit: hit.score, reverse=True)[:limit]
+        hits = sorted(hits, key=lambda hit: hit.score, reverse=True)
+        if not graph_expansion:
+            return MemoryRetrievalResult(hits[:limit], [])
+        if isinstance(graph_max_nodes, bool) or not isinstance(graph_max_nodes, int) or not 1 <= graph_max_nodes <= 50:
+            raise ValueError("graph_max_nodes must be an integer from 1 to 50")
+        expansion = MemoryGraphService(self.store).expand(hits[:graph_max_nodes], max_nodes=graph_max_nodes)
+        return MemoryRetrievalResult(expansion.hits[:limit], expansion.paths)
     @staticmethod
     def _cosine(left, right) -> float:
         if len(left) != len(right):
