@@ -1,0 +1,30 @@
+[project]
+name = "edgemind"
+version = "0.1.0"
+description = "A local-first personal agent harness with governed memory, tools, and quality evaluation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gradio>=6,<7",
+    "httpx>=0.27,<1",
+    "openai>=1,<3",
+    "python-dotenv>=1,<2",
+]
+
+[project.optional-dependencies]
+rag = [
+    "FlagEmbedding>=1.3,<2",
+    "hanlp>=2.1.1",
+    "jieba>=0.42,<0.43",
+    "numpy>=1.24,<3",
+    "rank-bm25>=0.2,<0.3",
+    "spacy>=3.8,<4",
+    "tqdm>=4.66,<5",
+]
+audio = ["faster-whisper>=1.0,<2", "av>=11,<19"]
+mcp = ["mcp[cli]>=2,<3"]
+agent = ["faster-whisper>=1.0,<2", "av>=11,<19", "mcp[cli]>=2,<3"]
+
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true

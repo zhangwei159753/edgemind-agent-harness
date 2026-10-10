@@ -1,0 +1,17 @@
+{
+  "id": "weather_briefing",
+  "version": "1.0",
+  "title": "天气与出行建议",
+  "description": "查询指定地点天气，并基于天气数据给出有边界的出行建议。",
+  "allowed_tools": ["edgemind__get_weather"],
+  "max_tool_rounds": 2,
+  "instructions": "先查询用户指定地点的天气。回答注明地点、当地时间和数据来源。将预报表述为可能情况；若地点有歧义，先请用户澄清。不得调用其他工具或编造天气数据。",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "location": {"type": "string", "description": "地点"}
+    },
+    "required": ["location"],
+    "additionalProperties": false
+  }
+}

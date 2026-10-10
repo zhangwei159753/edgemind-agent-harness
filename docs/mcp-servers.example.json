@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "enabled": false,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "D:/work/项目/EdgeMind"],
+      "env": {},
+      "tools": ["read_file", "list_directory"],
+      "read_only_tools": ["read_file", "list_directory"]
+    }
+  }
+}
