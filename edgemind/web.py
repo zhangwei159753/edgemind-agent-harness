@@ -118,6 +118,7 @@ def _harness_service():
             from .harness.builtin_tools import BuiltinToolRegistry
             from .harness.policies import AgentPolicyService
             from .harness.quality import QualityService
+            from .harness.graph import MemoryGraphService
             from .harness.tools import ToolRegistry
 
             store = HarnessStore(DEFAULT_STATE)
@@ -134,6 +135,7 @@ def _harness_service():
                 return response.data[0].embedding
 
             memory = MemoryService(store, embed_query=embed_memory)
+            graph = MemoryGraphService(store)
             tools = ToolRegistry(store)
             builtin_tools = BuiltinToolRegistry()
 
@@ -160,6 +162,7 @@ def _harness_service():
 
             _HARNESS_SERVICE = {"store": store, "memory": memory, "policies": policies,
                                 "quality": QualityService(store), "tools": tools,
+                                "graph": graph,
                                 "builtin_tools": builtin_tools, "rag_service": LazyRAG(),
                                 "tasks": TaskService(store),
                                 "agent": AgentService(store, memory=memory, tools=tools,
@@ -436,6 +439,65 @@ def propose_harness_memory(layer: str, content: str, task_id: str = ""):
         return {"status": "error", "message": str(exc)[:300]}
 
 
+def _memory_edge_payload(edge):
+    return {
+        "edge_id": edge.edge_id, "source_memory_id": edge.source_memory_id,
+        "target_memory_id": edge.target_memory_id, "relation": edge.relation,
+        "status": edge.status, "confidence": edge.confidence,
+        "source_run_id": edge.source_run_id, "created_at": edge.created_at,
+        "updated_at": edge.updated_at,
+    }
+
+
+def list_harness_memory_edges(status: str = "pending", memory_id: str = ""):
+    try:
+        selected_status = None if status == "all" else status
+        edges = _harness_service()["store"].list_memory_edges(
+            memory_id.strip() or None, status=selected_status, limit=100)
+        return [_memory_edge_payload(edge) for edge in edges]
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)[:300]}
+
+
+def propose_memory_relation(source_memory_id: str, target_memory_id: str, relation: str,
+                            confidence: float, source_run_id: str = ""):
+    try:
+        edge = _harness_service()["graph"].propose(
+            (source_memory_id or "").strip(), (target_memory_id or "").strip(), relation,
+            float(confidence), (source_run_id or "").strip() or None)
+        return {"ok": True, "edge": _memory_edge_payload(edge)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300]}
+
+
+def review_memory_relation(edge_id: str, decision: str):
+    try:
+        edge = _harness_service()["graph"].review((edge_id or "").strip(), decision)
+        return {"ok": True, "edge": _memory_edge_payload(edge)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300]}
+
+
+def format_memory_graph_paths(paths, limit: int = 12) -> str:
+    if not isinstance(paths, list) or not paths or not isinstance(limit, int) or limit <= 0:
+        return "没有记忆关系路径。"
+    lines = []
+    for path in paths[:min(limit, 50)]:
+        if not isinstance(path, dict):
+            continue
+        seed = str(path.get("seed_memory_id", ""))[:80]
+        related = str(path.get("related_memory_id", ""))[:80]
+        relation = str(path.get("relation", ""))[:32]
+        try:
+            confidence = max(0.0, min(1.0, float(path.get("confidence", 0.0))))
+            score = max(0.0, float(path.get("score", 0.0)))
+        except (TypeError, ValueError):
+            continue
+        kind = "冲突" if path.get("kind") == "conflict" else "关联"
+        lines.append(f"- {kind}：{seed} —{relation}→ {related}（置信度 {confidence:.2f} · 得分 {score:.3f}）")
+    return "\n".join(lines) if lines else "没有有效的记忆关系路径。"
+
+
 def delete_harness_memory(memory_id: str):
     try:
         deleted = _harness_service()["memory"].delete(memory_id.strip())
@@ -639,6 +701,34 @@ def build_demo():
                         reject_memory = gr.Button("拒绝", elem_classes=["secondary"])
                         delete_memory = gr.Button("删除", elem_classes=["secondary"])
                     memory_result = gr.JSON(label="审核结果")
+                    with gr.Accordion("记忆关系图 · 关系需单独审核后才参与检索", open=False):
+                        with gr.Row():
+                            graph_source_id = gr.Textbox(label="来源记忆 ID")
+                            graph_target_id = gr.Textbox(label="目标记忆 ID")
+                        with gr.Row():
+                            graph_relation = gr.Dropdown(
+                                label="关系类型",
+                                choices=[("支持", "supports"), ("来源于", "derived_from"),
+                                         ("矛盾", "contradicts"), ("用于", "used_in"),
+                                         ("相似", "similar_to")],
+                                value="supports",
+                            )
+                            graph_confidence = gr.Slider(label="关系置信度", minimum=0, maximum=1,
+                                                          value=0.7, step=0.05)
+                        graph_source_run_id = gr.Textbox(label="来源 Run ID（可选）")
+                        propose_graph_edge = gr.Button("创建待审核关系", elem_classes=["secondary"])
+                        with gr.Row():
+                            graph_edge_status = gr.Dropdown(
+                                label="关系状态", choices=[("待审核", "pending"), ("已批准", "approved"),
+                                                           ("已拒绝", "rejected"), ("全部", "all")],
+                                value="pending")
+                            refresh_graph_edges = gr.Button("刷新关系", elem_classes=["secondary"])
+                        graph_edge_list = gr.JSON(label="记忆关系边（最多 100 条）", elem_classes=["ed-card"])
+                        graph_edge_id = gr.Textbox(label="待审核关系 ID")
+                        with gr.Row():
+                            approve_graph_edge = gr.Button("批准关系", variant="primary")
+                            reject_graph_edge = gr.Button("拒绝关系", elem_classes=["secondary"])
+                        graph_result = gr.JSON(label="关系操作结果")
 
                 with gr.Column(visible=False, elem_classes=["ed-page"], elem_id="ed-page-tools") as page_tools:
                     gr.Markdown("### Agent 工具", elem_classes=["ed-page-title"])
@@ -738,6 +828,17 @@ def build_demo():
         approve_memory.click(lambda identity, content: review_harness_memory(identity, "approved", content), inputs=[memory_id, memory_edit], outputs=memory_result)
         reject_memory.click(lambda identity, content: review_harness_memory(identity, "rejected", content), inputs=[memory_id, memory_edit], outputs=memory_result)
         delete_memory.click(delete_harness_memory, inputs=memory_id, outputs=memory_result)
+        propose_graph_edge.click(propose_memory_relation,
+                                 inputs=[graph_source_id, graph_target_id, graph_relation,
+                                         graph_confidence, graph_source_run_id], outputs=graph_result)
+        refresh_graph_edges.click(list_harness_memory_edges,
+                                  inputs=graph_edge_status, outputs=graph_edge_list)
+        graph_edge_status.change(list_harness_memory_edges,
+                                 inputs=graph_edge_status, outputs=graph_edge_list)
+        approve_graph_edge.click(lambda identity: review_memory_relation(identity, "approved"),
+                                 inputs=graph_edge_id, outputs=graph_result)
+        reject_graph_edge.click(lambda identity: review_memory_relation(identity, "rejected"),
+                                inputs=graph_edge_id, outputs=graph_result)
         refresh_tool_status.click(lambda: tool_readiness_status(), outputs=builtin_status)
         discover_tools.click(list_mcp_tools, outputs=mcp_tools)
         health_check.click(lambda identity: format_health_result(check_builtin_tool_health(identity)), inputs=health_tool, outputs=health_result)

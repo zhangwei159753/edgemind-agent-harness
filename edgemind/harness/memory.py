@@ -125,7 +125,10 @@ class MemoryService:
             return MemoryRetrievalResult(hits[:limit], [])
         if isinstance(graph_max_nodes, bool) or not isinstance(graph_max_nodes, int) or not 1 <= graph_max_nodes <= 50:
             raise ValueError("graph_max_nodes must be an integer from 1 to 50")
-        expansion = MemoryGraphService(self.store).expand(hits[:graph_max_nodes], max_nodes=graph_max_nodes)
+        expansion = MemoryGraphService(self.store).expand(
+            hits[:graph_max_nodes], max_nodes=graph_max_nodes, task_id=task_id,
+            allowed_tags=allowed_tags, excluded_tags=excluded_tags,
+        )
         return MemoryRetrievalResult(expansion.hits[:limit], expansion.paths)
     @staticmethod
     def _cosine(left, right) -> float:

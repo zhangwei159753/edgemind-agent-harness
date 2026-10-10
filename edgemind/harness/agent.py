@@ -23,7 +23,8 @@ class AgentService:
     def __init__(self, store: HarnessStore, client=None, media: MediaProcessor | None = None,
                  memory: MemoryService | None = None, tools: ToolRegistry | None = None,
                  rag_service=None, builtin_tools: BuiltinToolRegistry | None = None,
-                 policy_service: AgentPolicyService | None = None, orchestrator: AgentOrchestrator | None = None):
+                 policy_service: AgentPolicyService | None = None, orchestrator: AgentOrchestrator | None = None,
+                 memory_graph_expansion: bool = True):
         self.store = store
         self.client = client
         self.media = media or MediaProcessor()
@@ -35,6 +36,7 @@ class AgentService:
         self.rag_service = rag_service
         self.policy_service = policy_service
         self.orchestrator = orchestrator
+        self.memory_graph_expansion = bool(memory_graph_expansion)
 
     def _client(self):
         if self.client is None:
@@ -296,6 +298,7 @@ class AgentService:
         stage_ms = {}
         memories = []
         evidence = []
+        memory_graph_paths = []
         rag_trace = None
         tool_calls_trace = []
         selected_skill = None
@@ -333,14 +336,29 @@ class AgentService:
                 content_parts.insert(0, {"type": "text", "text": user_text})
             query = user_text or "请描述附件内容，并结合当前任务上下文给出下一步。"
             stage_started = time.perf_counter()
+            retrieval_options = {"graph_expansion": self.memory_graph_expansion, "graph_max_nodes": 12}
             if policy is None:
-                memories = self.memory.retrieve(query, task_id=task_id, limit=8)
+                if hasattr(self.memory, "retrieve_with_trace"):
+                    memory_result = self.memory.retrieve_with_trace(query, task_id=task_id, limit=8,
+                                                                    **retrieval_options)
+                    memories, memory_graph_paths = memory_result.hits, memory_result.graph_paths
+                else:
+                    memories = self.memory.retrieve(query, task_id=task_id, limit=8)
             else:
-                memories = self.memory.retrieve(query, task_id=task_id, limit=policy.memory_top_k,
-                                               layer_weights=dict(policy.layer_weights),
-                                               time_decay_days=policy.time_decay_days,
-                                               allowed_tags=policy.allowed_memory_tags,
-                                               excluded_tags=policy.excluded_memory_tags)
+                if hasattr(self.memory, "retrieve_with_trace"):
+                    memory_result = self.memory.retrieve_with_trace(
+                        query, task_id=task_id, limit=policy.memory_top_k,
+                        layer_weights=dict(policy.layer_weights), time_decay_days=policy.time_decay_days,
+                        allowed_tags=policy.allowed_memory_tags, excluded_tags=policy.excluded_memory_tags,
+                        **retrieval_options,
+                    )
+                    memories, memory_graph_paths = memory_result.hits, memory_result.graph_paths
+                else:
+                    memories = self.memory.retrieve(query, task_id=task_id, limit=policy.memory_top_k,
+                                                   layer_weights=dict(policy.layer_weights),
+                                                   time_decay_days=policy.time_decay_days,
+                                                   allowed_tags=policy.allowed_memory_tags,
+                                                   excluded_tags=policy.excluded_memory_tags)
             stage_ms["memory_retrieval"] = round((time.perf_counter() - stage_started) * 1000, 2)
             context = self.tasks.context(task_id)
             evidence = []
@@ -445,6 +463,7 @@ class AgentService:
                      "layer": hit.item.layer, "content": hit.item.content, "score": hit.score,
                      "explanation": hit.explanation} for hit in memories],
                      "rag_trace": rag_trace,
+                     "memory_graph_paths": memory_graph_paths[:12],
                      "rag_evidence": [{"chunk_id": item.get("chunk_id"), "filename": item.get("filename"),
                                        "page": item.get("page"), "score": item.get("score"),
                                        "content": item.get("content", "")[:700]}
@@ -500,6 +519,7 @@ class AgentService:
                                              "content": hit.item.content, "score": hit.score,
                                              "explanation": hit.explanation} for hit in memories],
                             "rag_trace": rag_trace,
+                            "memory_graph_paths": memory_graph_paths[:12],
                             "rag_evidence": [{"chunk_id": item.get("chunk_id"), "filename": item.get("filename"),
                                               "page": item.get("page"), "score": item.get("score"),
                                               "content": item.get("content", "")[:700]} for item in evidence],

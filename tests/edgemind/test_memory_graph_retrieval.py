@@ -1,4 +1,6 @@
 import pytest
+import json
+from pathlib import Path
 
 from edgemind.harness.graph import MemoryGraphService
 from edgemind.harness.memory import MemoryService
@@ -25,9 +27,12 @@ def store_with_memories(tmp_path, *items):
 
 def test_pending_edge_is_excluded_and_approved_edge_expands_only_one_hop(tmp_path):
     store = store_with_memories(tmp_path, memory("seed"), memory("pending-target"),
+                                memory("rejected-target"),
                                 memory("connected"), memory("second-hop"))
     graph = MemoryGraphService(store)
     graph.propose("seed", "pending-target", "supports", 0.9)
+    rejected_edge = graph.propose("seed", "rejected-target", "supports", 0.9)
+    graph.review(rejected_edge.edge_id, "rejected")
     graph.propose("seed", "connected", "supports", 0.8)
     approved = next(item for item in store.list_memory_edges("seed", status="pending")
                     if item.target_memory_id == "connected")
@@ -41,7 +46,7 @@ def test_pending_edge_is_excluded_and_approved_edge_expands_only_one_hop(tmp_pat
 
     ids = {hit.item.memory_id for hit in expanded.hits}
     assert ids == {"seed", "connected"}
-    assert "pending-target" not in ids and "second-hop" not in ids
+    assert "pending-target" not in ids and "rejected-target" not in ids and "second-hop" not in ids
 
 
 @pytest.mark.parametrize("relation,weight", [
@@ -118,3 +123,50 @@ def test_deleted_endpoints_cannot_leave_dangling_graph_hits(tmp_path):
 
     assert [hit.item.memory_id for hit in expanded.hits] == ["seed"]
     assert expanded.paths == []
+
+
+def test_graph_expansion_preserves_task_and_memory_tag_filters(tmp_path):
+    store = HarnessStore(tmp_path / "scope.sqlite3")
+    task_memory = MemoryItem("seed", "semantic", "deployment policy exact query", "approved",
+                             "task-1", None, 0.8, {})
+    other_task = MemoryItem("other-task", "semantic", "other task context", "approved",
+                            "task-2", None, 0.8, {})
+    excluded_tag = MemoryItem("private", "semantic", "private context", "approved",
+                              "task-1", None, 0.8, {"tags": ["private"]})
+    store.put_memory(task_memory)
+    store.put_memory(other_task)
+    store.put_memory(excluded_tag)
+    store.put_memory_edge(edge("seed", "other-task"))
+    store.put_memory_edge(edge("seed", "private"))
+
+    result = MemoryService(store).retrieve_with_trace(
+        "deployment policy exact query", task_id="task-1", graph_expansion=True,
+        excluded_tags=("private",),
+    )
+
+    assert [hit.item.memory_id for hit in result.hits] == ["seed"]
+    assert result.graph_paths == []
+
+
+def test_isolated_graph_fixture_expands_only_reviewed_relations(tmp_path):
+    fixture_path = Path("tests/data/memory_graph_v1.jsonl")
+    records = [json.loads(line) for line in fixture_path.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["version"] == 1
+
+    for case in records[1:]:
+        store = HarnessStore(tmp_path / f"{case['example_id']}.sqlite3")
+        seed = memory(case["seed"]["memory_id"], case["seed"]["content"])
+        related = memory(case["related"]["memory_id"], case["related"]["content"])
+        store.put_memory(seed)
+        store.put_memory(related)
+        graph = MemoryGraphService(store)
+        edge = graph.propose(seed.memory_id, related.memory_id, case["edge"]["relation"],
+                             case["edge"]["confidence"], source_run_id="fixture-run")
+        if case["edge"]["status"] == "approved":
+            graph.review(edge.edge_id, "approved")
+        expansion = graph.expand([MemoryHit(seed, 1.0, {})])
+        related_ids = [hit.item.memory_id for hit in expansion.hits if hit.item.memory_id != seed.memory_id]
+
+        assert related_ids == case["expected"]["related_memory_ids"]
+        assert len(expansion.paths) == case["expected"]["path_count"]
+        assert str(tmp_path) in store.db_path

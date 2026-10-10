@@ -65,6 +65,7 @@
 - `MemoryGraphService.review(edge_id, decision) -> MemoryEdge`, with decision restricted to approved/rejected.
 - `MemoryGraphService.expand(seed_hits: list[MemoryHit], max_nodes: int = 12) -> GraphExpansionResult` follows only approved edges one hop and returns `hits: list[MemoryHit]` plus `paths: list[dict]`; keep relation strings out of the numeric `MemoryHit.explanation` map.
 - Extend `MemoryService.retrieve(..., graph_expansion: bool = False, graph_max_nodes: int = 12)`; default remains compatible and graph is opt-in until rollout enables it.
+- `AgentService` opts into bounded expansion for normal turns by default (`memory_graph_expansion=True`); callers can disable it. Expansion preserves current task scope and allowed/excluded memory-tag filters.
 - Add `MemoryService.retrieve_with_trace(query: str, ..., graph_expansion: bool = False, graph_max_nodes: int = 12) -> MemoryRetrievalResult(hits: list[MemoryHit], graph_paths: list[dict])`; existing `retrieve()` returns only `hits` by delegating to this method.
 - Expanded-hit score is `seed.score * edge.confidence * relation_weight`, deduplicated by maximum score; relation weights are `supports=0.9`, `derived_from=0.8`, `used_in=0.7`, `similar_to=0.6`. `contradicts` never adds a positive hit; it returns a conflict path attached to the trace for review.
 

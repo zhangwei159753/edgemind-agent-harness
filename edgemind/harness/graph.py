@@ -55,7 +55,9 @@ class MemoryGraphService:
                 raise ValueError("both memory edge endpoints must be approved before edge approval")
         return self.store.review_memory_edge(edge_id, decision)
 
-    def expand(self, seed_hits: list[MemoryHit], max_nodes: int = 12) -> GraphExpansionResult:
+    def expand(self, seed_hits: list[MemoryHit], max_nodes: int = 12, task_id: str | None = None,
+               allowed_tags: tuple[str, ...] = (),
+               excluded_tags: tuple[str, ...] = ()) -> GraphExpansionResult:
         if (not isinstance(max_nodes, int) or isinstance(max_nodes, bool)
                 or not 1 <= max_nodes <= _MAX_GRAPH_NODES):
             raise ValueError(f"max_nodes must be an integer from 1 to {_MAX_GRAPH_NODES}")
@@ -73,6 +75,7 @@ class MemoryGraphService:
             if len(hits_by_id) >= max_nodes:
                 break
         seed_ids = tuple(hits_by_id)
+        allowed, excluded = set(allowed_tags), set(excluded_tags)
         paths: list[dict] = []
         expanded_scores: dict[str, MemoryHit] = {}
         for seed_id in seed_ids:
@@ -87,6 +90,16 @@ class MemoryGraphService:
                 related_id = (edge.target_memory_id if edge.source_memory_id == seed_id
                               else edge.source_memory_id)
                 if related_id in seed_ids:
+                    continue
+                item = self.store.get_memory(related_id)
+                if item is None or item.status != "approved":
+                    continue
+                if task_id and item.source_task_id and item.source_task_id != task_id:
+                    continue
+                tags_value = item.metadata.get("tags", []) if isinstance(item.metadata, dict) else []
+                tags = {tag for tag in tags_value if isinstance(tag, str)} \
+                    if isinstance(tags_value, (list, tuple, set)) else set()
+                if (allowed and not (tags & allowed)) or (excluded & tags):
                     continue
                 relation_weight = RELATION_WEIGHTS.get(edge.relation, 0.0)
                 score = seed.score * edge.confidence * relation_weight
@@ -104,9 +117,6 @@ class MemoryGraphService:
                 if len(paths) < max_nodes:
                     paths.append(path)
                 if edge.relation == "contradicts":
-                    continue
-                item = self.store.get_memory(related_id)
-                if item is None or item.status != "approved":
                     continue
                 candidate = MemoryHit(item, score, {
                     "graph_seed_score": seed.score,

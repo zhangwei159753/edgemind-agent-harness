@@ -466,14 +466,14 @@ class HarnessStore:
             row = conn.execute("SELECT * FROM harness_memory_edges WHERE edge_id=?", (edge_id,)).fetchone()
         return None if row is None else self._memory_edge(row)
 
-    def list_memory_edges(self, memory_id: str, status: str | None = "approved",
+    def list_memory_edges(self, memory_id: str | None = None, status: str | None = "approved",
                           limit: int = 100) -> list[MemoryEdge]:
         if status is not None and status not in {"pending", "approved", "rejected"}:
             raise ValueError("invalid memory edge status filter")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
             raise ValueError("limit must be an integer from 1 to 500")
-        clauses = "(source_memory_id=? OR target_memory_id=?)"
-        params: list[Any] = [memory_id, memory_id]
+        clauses = "1=1" if memory_id is None else "(source_memory_id=? OR target_memory_id=?)"
+        params: list[Any] = [] if memory_id is None else [memory_id, memory_id]
         if status is not None:
             clauses += " AND status=?"
             params.append(status)
