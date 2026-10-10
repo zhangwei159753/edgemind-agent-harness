@@ -35,3 +35,6 @@ uploads/
 
 # Local agent planning state
 .superpowers/
+
+# Git worktrees
+.worktrees/
