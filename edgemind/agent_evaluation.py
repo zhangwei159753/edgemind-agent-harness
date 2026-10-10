@@ -8,7 +8,7 @@ import re
 import statistics
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
@@ -22,8 +22,10 @@ from .harness.tasks import TaskService
 _MAX_DATASET_BYTES = 2_000_000
 _MAX_CASE_BYTES = 64_000
 _MAX_CASES = 100
-_ALLOWED_CASE_KEYS = {"record_type", "example_id", "task", "input", "available_tools", "memory_fixtures",
-                      "fixture", "expected", "checker_ids"}
+_REQUIRED_CASE_KEYS = {"record_type", "example_id", "task", "input", "available_tools", "memory_fixtures",
+                       "fixture", "expected", "checker_ids"}
+_OPTIONAL_CASE_KEYS = {"orchestration_mode", "expected_plan_id", "expected_roles", "max_model_calls"}
+_ALLOWED_CASE_KEYS = _REQUIRED_CASE_KEYS | _OPTIONAL_CASE_KEYS
 _ALLOWED_TASK_KEYS = {"title", "objective", "state"}
 _ALLOWED_EXPECTED_KEYS = {"answer_contains", "tool_names", "forbidden_tool_names", "task_outcome", "memory_ids",
                           "citation_ids", "tool_success"}
@@ -74,6 +76,10 @@ class AgentDatasetCase:
     fixture: Mapping[str, Any]
     expected: Mapping[str, Any]
     checker_ids: tuple[str, ...]
+    orchestration_mode: str = "single"
+    expected_plan_id: str | None = None
+    expected_roles: tuple[str, ...] = ()
+    max_model_calls: int = 8
 
 
 @dataclass(frozen=True)
@@ -127,8 +133,8 @@ def load_agent_dataset(path: str | Path) -> AgentDataset:
         raise ValueError("Agent dataset may contain at most 100 cases")
     cases, seen = [], set()
     for index, raw in enumerate(records[1:], 2):
-        required = _ALLOWED_CASE_KEYS
-        if set(raw) != required or raw.get("record_type") != "case":
+        if (not _REQUIRED_CASE_KEYS.issubset(raw) or set(raw) - _ALLOWED_CASE_KEYS
+                or raw.get("record_type") != "case"):
             raise ValueError(f"invalid case fields on line {index}")
         example_id = raw.get("example_id")
         if not isinstance(example_id, str) or not example_id.strip() or len(example_id) > 120:
@@ -173,12 +179,24 @@ def load_agent_dataset(path: str | Path) -> AgentDataset:
                 raise ValueError(f"duplicate memory fixture ID in {example_id}")
             memory_ids.add(memory["memory_id"])
         fixture = raw.get("fixture")
-        if not isinstance(fixture, dict) or set(fixture) - {"responses", "tool_outputs", "citations"}:
+        if not isinstance(fixture, dict) or set(fixture) - {"responses", "responses_by_mode", "tool_outputs", "citations"}:
             raise ValueError(f"invalid fixture object for {example_id}")
         responses = fixture.get("responses")
-        if not isinstance(responses, list) or not responses or len(responses) > 12:
+        responses_by_mode = fixture.get("responses_by_mode")
+        if responses is None and responses_by_mode is None:
             raise ValueError(f"fixture responses are required for {example_id}")
-        for response in responses:
+        if responses is not None and (not isinstance(responses, list) or not responses or len(responses) > 12):
+            raise ValueError(f"fixture responses are invalid for {example_id}")
+        if responses_by_mode is not None:
+            if (not isinstance(responses_by_mode, dict) or not responses_by_mode
+                    or set(responses_by_mode) - {"single", "auto", "multi"}):
+                raise ValueError(f"fixture responses_by_mode are invalid for {example_id}")
+            if any(not isinstance(items, list) or not items or len(items) > 12
+                   for items in responses_by_mode.values()):
+                raise ValueError(f"fixture responses_by_mode are invalid for {example_id}")
+        all_response_sets = ([responses] if responses is not None else []) + (
+            list(responses_by_mode.values()) if responses_by_mode is not None else [])
+        for response in [item for response_set in all_response_sets for item in response_set]:
             if not isinstance(response, dict) or set(response) - {"content", "tool_calls"}:
                 raise ValueError(f"invalid provider response fixture for {example_id}")
             calls = response.get("tool_calls", [])
@@ -195,8 +213,26 @@ def load_agent_dataset(path: str | Path) -> AgentDataset:
         checker_ids = raw.get("checker_ids")
         if not isinstance(checker_ids, list) or any(item not in CHECKER_IDS for item in checker_ids):
             raise ValueError(f"unsupported checker for {example_id}")
+        orchestration_mode = raw.get("orchestration_mode", "single")
+        if orchestration_mode not in {"single", "auto", "multi"}:
+            raise ValueError(f"invalid orchestration_mode for {example_id}")
+        expected_plan_id = raw.get("expected_plan_id")
+        if expected_plan_id is not None and (
+            not isinstance(expected_plan_id, str) or not expected_plan_id.strip() or len(expected_plan_id) > 80
+        ):
+            raise ValueError(f"invalid expected_plan_id for {example_id}")
+        expected_roles = raw.get("expected_roles", [])
+        valid_roles = {"planner", "researcher", "executor", "reviewer"}
+        if (not isinstance(expected_roles, list) or len(expected_roles) > 8
+                or any(role not in valid_roles for role in expected_roles)):
+            raise ValueError(f"invalid expected_roles for {example_id}")
+        max_model_calls = raw.get("max_model_calls", 8)
+        if (not isinstance(max_model_calls, int) or isinstance(max_model_calls, bool)
+                or not 1 <= max_model_calls <= 8):
+            raise ValueError(f"max_model_calls must be from 1 to 8 for {example_id}")
         cases.append(AgentDatasetCase(example_id, _freeze(task), raw["input"], tuple(_freeze(tools)),
-                                      tuple(_freeze(memories)), _freeze(fixture), _freeze(expected), tuple(checker_ids)))
+                                      tuple(_freeze(memories)), _freeze(fixture), _freeze(expected), tuple(checker_ids),
+                                      orchestration_mode, expected_plan_id, tuple(expected_roles), max_model_calls))
     return AgentDataset(manifest["dataset_id"], manifest["version"], manifest["description"], tuple(cases),
                         hashlib.sha256(raw_bytes).hexdigest(), str(dataset_path.resolve()))
 
@@ -211,18 +247,24 @@ class AgentEvaluationRunner:
         self.temp_store_factory = temp_store_factory
 
     def run(self, dataset_path: str | Path, policy: AgentPolicy, mode: str = "fixture",
-            repetitions: int = 1, confirmed_live: bool = False) -> dict[str, Any]:
+            repetitions: int = 1, confirmed_live: bool = False,
+            orchestration_mode_override: str | None = None) -> dict[str, Any]:
         if mode not in {"fixture", "live"}:
             raise ValueError("mode must be fixture or live")
         if mode == "live" and not confirmed_live:
             raise ValueError("live evaluation requires explicit confirmation")
+        if orchestration_mode_override not in {None, "single", "auto", "multi"}:
+            raise ValueError("invalid orchestration mode override")
         if not isinstance(repetitions, int) or isinstance(repetitions, bool) or not 1 <= repetitions <= 5:
             raise ValueError("repetitions must be between 1 and 5")
         dataset = load_agent_dataset(dataset_path)
         all_case_results, repetition_metrics, stores = [], [], []
         for repetition in range(1, repetitions + 1):
             cases = []
-            for case in dataset.cases:
+            for original_case in dataset.cases:
+                case = (replace(original_case, orchestration_mode=orchestration_mode_override,
+                                expected_plan_id=None, expected_roles=())
+                        if orchestration_mode_override else original_case)
                 try:
                     required_tools = set(case.expected.get("tool_names", ()))
                     unavailable = sorted(required_tools - set(policy.tool_allowlist))
@@ -248,7 +290,8 @@ class AgentEvaluationRunner:
                         raise ValueError("agent_factory must return AgentService bound to the isolated HarnessStore")
                     if mode == "fixture":
                         self._assert_fixture_wiring(agent, fixtures)
-                    turn = agent.run_turn(task.task_id, case.input)
+                    turn = agent.run_turn(task.task_id, case.input,
+                                          orchestration_mode=case.orchestration_mode)
                     result = self._evaluate_case(case, turn, policy, mode, repetition)
                     result["task_id"] = task.task_id
                     cases.append(result)
@@ -270,12 +313,55 @@ class AgentEvaluationRunner:
             "model": "fixture-stub" if mode == "fixture" else self._first_model(case_results),
             "provider_metadata": {"provider": "fixture" if mode == "fixture" else "configured live provider",
                                   "usage_available": False}, "repetitions": repetitions,
+            "orchestration_mode": orchestration_mode_override or self._dataset_mode(dataset.cases),
             "case_count": len(dataset.cases), "applicable_case_count": applicable_case_count,
             "not_applicable_case_count": len(case_results) - applicable_case_count,
             "metrics": metrics, "na_reasons": na_reasons,
             "repetition_metrics": repetition_metrics, "repeated_metric_summary": self._repetition_summary(repetition_metrics),
             "case_results": case_results,
         }
+
+    def compare_modes(self, dataset_path: str | Path, policy: AgentPolicy, mode: str = "fixture",
+                      repetitions: int = 1, confirmed_live: bool = False) -> dict[str, Any]:
+        """Compare single and multi orchestration over identical versioned cases."""
+        single = self.run(dataset_path, policy, mode=mode, repetitions=repetitions,
+                          confirmed_live=confirmed_live, orchestration_mode_override="single")
+        multi = self.run(dataset_path, policy, mode=mode, repetitions=repetitions,
+                         confirmed_live=confirmed_live, orchestration_mode_override="multi")
+        if single["dataset_hash"] != multi["dataset_hash"]:
+            raise ValueError("single and multi evaluations must use the same dataset hash")
+        return {"dataset_hash": single["dataset_hash"], "dataset_id": single["dataset_id"],
+                "single": single, "multi": multi,
+                "metrics_delta": AgentEvaluationRunner._metrics_difference(
+                    single["metrics"], multi["metrics"]),
+                "case_differences": AgentEvaluationRunner._mode_case_differences(
+                    single["case_results"], multi["case_results"])}
+
+    @staticmethod
+    def _dataset_mode(cases: tuple[AgentDatasetCase, ...]) -> str:
+        modes = {case.orchestration_mode for case in cases}
+        return next(iter(modes)) if len(modes) == 1 else "mixed"
+
+    @staticmethod
+    def _metrics_difference(single: Mapping[str, Any], multi: Mapping[str, Any]) -> dict[str, float]:
+        return {name: multi[name] - single[name] for name in set(single) & set(multi)
+                if isinstance(single[name], (int, float)) and not isinstance(single[name], bool)
+                and isinstance(multi[name], (int, float)) and not isinstance(multi[name], bool)}
+
+    @staticmethod
+    def _mode_case_differences(single_cases: list[dict], multi_cases: list[dict]) -> list[dict]:
+        single = {(item.get("example_id"), item.get("repetition")): item for item in single_cases}
+        multi = {(item.get("example_id"), item.get("repetition")): item for item in multi_cases}
+        differences = []
+        for key in sorted(set(single) | set(multi), key=str):
+            left, right = single.get(key), multi.get(key)
+            if left is None or right is None or left.get("passed") != right.get("passed"):
+                differences.append({"example_id": key[0], "repetition": key[1],
+                                    "single_passed": None if left is None else left.get("passed"),
+                                    "multi_passed": None if right is None else right.get("passed"),
+                                    "single_status": None if left is None else left.get("actual_status"),
+                                    "multi_status": None if right is None else right.get("actual_status")})
+        return differences
 
     @staticmethod
     def _assert_isolated_store(store: HarnessStore, used_stores: list[HarnessStore]) -> None:
@@ -318,8 +404,21 @@ class AgentEvaluationRunner:
         selected_checkers = set(case.checker_ids) | set(policy.checker_ids)
         actual_tools = [entry.get("name") for entry in turn.trace.get("tool_calls", []) if isinstance(entry, dict)]
         tool_statuses = [entry.get("status") for entry in turn.trace.get("tool_calls", []) if isinstance(entry, dict)]
+        orchestration = turn.trace.get("orchestration", {})
+        role_handoffs = orchestration.get("handoffs", []) if isinstance(orchestration, dict) else []
+        role_sequence = [entry.get("role") for entry in role_handoffs if isinstance(entry, dict)]
+        model_call_count = orchestration.get("call_count", 0) if isinstance(orchestration, dict) else 0
         forbidden = set(expected.get("forbidden_tool_names", []))
         checks = {}
+        checks["orchestration_mode"] = orchestration.get("mode", "single") == case.orchestration_mode
+        checks["model_call_budget"] = (
+            isinstance(model_call_count, int) and not isinstance(model_call_count, bool)
+            and model_call_count <= case.max_model_calls
+        )
+        if case.expected_plan_id is not None:
+            checks["selected_plan_id"] = orchestration.get("selected_candidate_id") == case.expected_plan_id
+        if case.expected_roles:
+            checks["role_sequence"] = role_sequence == list(case.expected_roles)
         if "expected_outcome" in selected_checkers and "answer_contains" in expected:
             answer_lower = (turn.answer or "").lower()
             checks["answer_contains"] = all(str(item).lower() in answer_lower for item in expected["answer_contains"])
@@ -363,6 +462,11 @@ class AgentEvaluationRunner:
                 "memory_ids": sorted(actual_memories), "expected_memory_ids": list(expected.get("memory_ids", [])),
                 "citation_ids": sorted(citations), "expected_citation_ids": list(expected.get("citation_ids", [])),
                 "expected_outcome": expected.get("task_outcome"),
+                "orchestration_mode": case.orchestration_mode,
+                "selected_plan_id": orchestration.get("selected_candidate_id"),
+                "role_sequence": role_sequence,
+                "model_call_count": model_call_count,
+                "max_model_calls": case.max_model_calls,
                 "actual_outcome": {"succeeded": "success", "failed": "failure",
                                    "awaiting_tool_approval": "awaiting_tool_approval"}.get(turn.status, turn.status),
                 "latency_ms": turn.trace.get("elapsed_ms"), "model": turn.trace.get("model"),
@@ -400,6 +504,8 @@ class AgentEvaluationRunner:
         citation_tp = sum(len(set(case["citation_ids"]) & set(case["expected_citation_ids"])) for case in citation_cases)
         citation_gold = sum(len(case["expected_citation_ids"]) for case in citation_cases)
         latencies = [case["latency_ms"] for case in applicable if isinstance(case.get("latency_ms"), (int, float))]
+        model_calls = [case["model_call_count"] for case in applicable
+                       if isinstance(case.get("model_call_count"), (int, float))]
         attempts = len(tool_calls)
         safe_calls = attempts - sum(case.get("unsafe_tool_attempts", 0) for case in cases)
         return {
@@ -412,8 +518,12 @@ class AgentEvaluationRunner:
             "memory_recall_at_k": memory_tp / memory_gold if memory_gold else None,
             "citation_coverage": citation_tp / citation_gold if citation_gold else None,
             "latency_ms_mean": statistics.fmean(latencies) if latencies else None,
+            "latency_ms_p95": (sorted(latencies)[max(0, math.ceil(0.95 * len(latencies)) - 1)]
+                               if latencies else None),
+            "model_call_count_mean": statistics.fmean(model_calls) if model_calls else None,
             "user_feedback_outcome_rate": None,
             "token_usage": None,
+            "token_usage_mean": None,
         }
 
     @staticmethod
@@ -429,6 +539,7 @@ class AgentEvaluationRunner:
                 reasons[name] = {
                     "user_feedback_outcome_rate": "evaluation fixtures do not fabricate user feedback",
                     "token_usage": "provider usage is unavailable in the injected fixture responses",
+                    "token_usage_mean": "provider usage is unavailable in the injected fixture responses",
                     "tool_call_success_rate": "no tool execution occurred",
                     "allowlist_compliance": "no tool calls occurred",
                     "expected_outcome_accuracy": "no dataset outcome labels are available",

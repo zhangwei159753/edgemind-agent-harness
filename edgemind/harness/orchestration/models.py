@@ -141,6 +141,7 @@ class ExecutorResult:
     proposal_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_rounds: int = 0
     tool_warning: str | None = None
+    model_calls: int | None = None
 
     def __post_init__(self) -> None:
         _bounded_text(self.answer, "answer", 20000, allow_empty=True)
@@ -158,6 +159,10 @@ class ExecutorResult:
             raise ValueError("tool_rounds must be a non-negative integer")
         if self.tool_warning is not None:
             _bounded_text(self.tool_warning, "tool_warning", 100)
+        if self.model_calls is not None and (
+            not isinstance(self.model_calls, int) or isinstance(self.model_calls, bool) or self.model_calls < 0
+        ):
+            raise ValueError("model_calls must be a non-negative integer or None")
 
 
 @dataclass(frozen=True)

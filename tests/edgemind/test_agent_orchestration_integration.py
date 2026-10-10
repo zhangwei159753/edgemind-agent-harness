@@ -56,9 +56,13 @@ class SideEffectMcp:
 
 
 def plan(expected_tools=()):
-    return json.dumps({"summary": "Complete the requested work using bounded steps.", "steps": [{
-        "step_id": "step-1", "goal": "Produce an evidence-based answer", "depends_on": [],
-        "expected_evidence": [], "expected_tools": list(expected_tools), "risk": "low", "estimated_calls": 1,
+    return json.dumps({"candidates": [{
+        "candidate_id": "plan-1", "steps": [{
+            "step_id": "step-1", "goal": "Produce an evidence-based answer", "depends_on": [],
+            "expected_evidence": [], "expected_tools": list(expected_tools), "risk": "low", "estimated_calls": 1,
+        }],
+        "goal_coverage": 0.9, "evidence_availability": 0.9, "tool_availability": 1.0,
+        "risk_score": 0.1, "safety_ok": True, "estimated_cost": 0.2,
     }]})
 
 

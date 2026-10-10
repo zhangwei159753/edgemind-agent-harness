@@ -41,14 +41,16 @@ def request(task_id, mode="multi"):
 
 
 def plan_json(expected_evidence=("doc-1", "memory-1")):
-    return json.dumps({
-        "summary": "Find evidence, then synthesize it.",
+    return json.dumps({"candidates": [{
+        "candidate_id": "plan-1",
         "steps": [{
-            "step_id": "step-1", "goal": "Answer using evidence", "depends_on": [],
+            "step_id": "step-1", "goal": "Find evidence, then synthesize it.", "depends_on": [],
             "expected_evidence": list(expected_evidence), "expected_tools": ["edgemind__web_search"],
             "risk": "low", "estimated_calls": 1,
         }],
-    })
+        "goal_coverage": 0.9, "evidence_availability": 1.0, "tool_availability": 1.0,
+        "risk_score": 0.1, "safety_ok": True, "estimated_cost": 0.2,
+    }]})
 
 
 def reviewer_json(decision="accept", instruction=""):
@@ -91,7 +93,7 @@ def test_orchestrator_hands_off_planner_researcher_executor_reviewer_in_order(tm
     assert store.list_events(task.task_id)
 
 
-def test_orchestrator_falls_back_safely_when_planner_output_is_malformed(tmp_path):
+def test_orchestrator_returns_safe_clarification_when_planner_output_is_malformed(tmp_path):
     store, task = make_store(tmp_path)
     completions = FakeCompletions(["not json"])
     orchestrator = AgentOrchestrator(SimpleNamespace(chat=SimpleNamespace(completions=completions)), store)
@@ -103,11 +105,11 @@ def test_orchestrator_falls_back_safely_when_planner_output_is_malformed(tmp_pat
 
     result = orchestrator.run(request(task.task_id), executor, {})
 
-    assert result.status == "awaiting_tool_approval"
+    assert result.status == "needs_clarification"
     assert result.trace["fallback_reason"] == "invalid_role_output"
-    assert len(seen) == 1 and seen[0].role == "executor"
-    assert seen[0].allowed_tools == ("edgemind__web_search",)
-    assert result.pending_tool_calls == [{"proposal_id": "p-1"}]
+    assert result.trace["review_status"] == "no_safe_plan"
+    assert seen == []
+    assert result.pending_tool_calls == []
 
 
 def test_orchestrator_records_provider_error_type_and_falls_back(tmp_path):

@@ -13,6 +13,7 @@ from .models import (
     RoleResult,
 )
 from .prompts import PLANNER_PROMPT, PROMPT_VERSION, REVIEWER_PROMPT
+from .planning import select_candidate, validate_candidates
 
 _MAX_CONTEXT_BYTES = 60 * 1024
 _MAX_ROLE_OUTPUT_BYTES = 16 * 1024
@@ -63,18 +64,22 @@ class AgentOrchestrator:
     """Runs a bounded sequential role flow; tool execution stays injected."""
 
     def __init__(self, client, store, role_call_budget: int = 8, max_steps: int = 5,
-                 max_revisions: int = 1):
+                 max_revisions: int = 1, model_call_budget: int = 8):
         if not isinstance(role_call_budget, int) or isinstance(role_call_budget, bool) or not 3 <= role_call_budget <= 32:
             raise ValueError("role_call_budget must be an integer from 3 to 32")
         if not isinstance(max_steps, int) or isinstance(max_steps, bool) or not 1 <= max_steps <= 5:
             raise ValueError("max_steps must be an integer from 1 to 5")
         if max_revisions not in {0, 1}:
             raise ValueError("max_revisions must be 0 or 1")
+        if (not isinstance(model_call_budget, int) or isinstance(model_call_budget, bool)
+                or not 1 <= model_call_budget <= 8):
+            raise ValueError("model_call_budget must be an integer from 1 to 8")
         self.client = client
         self.store = store
         self.role_call_budget = role_call_budget
         self.max_steps = max_steps
         self.max_revisions = max_revisions
+        self.model_call_budget = model_call_budget
 
     def _context(self, request: OrchestrationRequest) -> dict[str, Any]:
         context = {
@@ -124,7 +129,33 @@ class AgentOrchestrator:
             if not isinstance(payload, dict):
                 return RoleResult(role, "failed", {}, "invalid_role_output")
             if role == "planner":
-                self._validate_plan(payload, context)
+                candidates = validate_candidates(payload, set(context["allowed_tools"]),
+                                                 max_steps=self.max_steps, max_candidates=3)
+                available_ids = {item["memory_id"] for item in context["memories"]}
+                available_ids.update(item["chunk_id"] for item in context["evidence"])
+                if any(not set(step.expected_evidence).issubset(available_ids)
+                       for candidate in candidates for step in candidate.steps):
+                    return RoleResult(role, "failed", {}, "invalid_role_output")
+                selected, selection = select_candidate(candidates)
+                if selected is None:
+                    return RoleResult(role, "rejected", {"selection": selection}, "no_safety_valid_candidate")
+                selected_plan = {
+                    "candidate_id": selected.candidate_id,
+                    "steps": [{
+                        "step_id": step.step_id, "goal": step.goal,
+                        "depends_on": list(step.depends_on),
+                        "expected_evidence": list(step.expected_evidence),
+                        "expected_tools": list(step.expected_tools), "risk": step.risk,
+                        "estimated_calls": step.estimated_calls,
+                    } for step in selected.steps],
+                    "goal_coverage": selected.goal_coverage,
+                    "evidence_availability": selected.evidence_availability,
+                    "tool_availability": selected.tool_availability,
+                    "risk_score": selected.risk_score,
+                    "estimated_cost": selected.estimated_cost,
+                }
+                return RoleResult(role, "succeeded", {"selected_plan": selected_plan,
+                                                       "selection": selection})
             elif role == "reviewer":
                 self._validate_review(payload)
             else:
@@ -137,43 +168,19 @@ class AgentOrchestrator:
         finally:
             stage_ms[f"agent_role_{role}"] = round((time.perf_counter() - started) * 1000, 2)
 
-    def _validate_plan(self, payload: dict[str, Any], context: dict[str, Any]) -> None:
-        if set(payload) != {"summary", "steps"}:
-            raise ValueError("planner output fields are invalid")
-        summary = payload["summary"]
-        steps = payload["steps"]
-        if not isinstance(summary, str) or not summary.strip() or len(summary) > 1000:
-            raise ValueError("planner summary is invalid")
-        if not isinstance(steps, list) or not 1 <= len(steps) <= self.max_steps:
-            raise ValueError("planner step count is invalid")
-        available_ids = {item["memory_id"] for item in context["memories"]}
-        available_ids.update(item["chunk_id"] for item in context["evidence"])
-        allowed_tools = set(context["allowed_tools"])
-        seen = set()
-        for step in steps:
-            fields = {"step_id", "goal", "depends_on", "expected_evidence", "expected_tools", "risk", "estimated_calls"}
-            if not isinstance(step, dict) or set(step) != fields:
-                raise ValueError("planner step fields are invalid")
-            step_id, goal = step["step_id"], step["goal"]
-            if not isinstance(step_id, str) or not step_id.strip() or len(step_id) > 80 or step_id in seen:
-                raise ValueError("planner step ID is invalid")
-            if not isinstance(goal, str) or not goal.strip() or len(goal) > 1000:
-                raise ValueError("planner step goal is invalid")
-            deps = step["depends_on"]
-            if not isinstance(deps, list) or len(deps) > 5 or any(dep not in seen for dep in deps):
-                raise ValueError("planner dependencies must reference earlier steps")
-            evidence = step["expected_evidence"]
-            tools = step["expected_tools"]
-            if not isinstance(evidence, list) or len(evidence) > 20 or any(item not in available_ids for item in evidence):
-                raise ValueError("planner referenced unavailable evidence")
-            if not isinstance(tools, list) or len(tools) > 20 or any(item not in allowed_tools for item in tools):
-                raise ValueError("planner referenced a disallowed tool")
-            if step["risk"] not in {"low", "medium", "high"}:
-                raise ValueError("planner risk is invalid")
-            calls = step["estimated_calls"]
-            if not isinstance(calls, int) or isinstance(calls, bool) or not 1 <= calls <= 8:
-                raise ValueError("planner estimated_calls is invalid")
-            seen.add(step_id)
+    @staticmethod
+    def _plan_summary(plan: dict[str, Any]) -> str:
+        return "; ".join(step["goal"] for step in plan["steps"])[:1000]
+
+    @staticmethod
+    def _clarification(trace: dict[str, Any], reason: str, answer: str | None = None) -> OrchestrationResult:
+        trace["status"] = "needs_clarification"
+        trace["review_status"] = "no_safe_plan" if reason != "model_call_budget_exhausted" else reason
+        trace["fallback_reason"] = reason
+        return OrchestrationResult(
+            answer or "当前证据、工具权限或调用预算不足以生成安全执行计划。请补充信息或缩小任务范围。",
+            "needs_clarification", trace, None, [], None,
+        )
 
     @staticmethod
     def _validate_review(payload: dict[str, Any]) -> None:
@@ -210,7 +217,10 @@ class AgentOrchestrator:
         except Exception as exc:
             result = ExecutorResult("Agent 执行阶段失败，未能继续完成任务。", "failed", [],
                                     {"error_type": type(exc).__name__})
-        trace["call_count"] += result.tool_rounds if result.status == "awaiting_tool_approval" else result.tool_rounds + 1
+        if result.model_calls is not None:
+            trace["call_count"] += result.model_calls
+        else:
+            trace["call_count"] += result.tool_rounds if result.status == "awaiting_tool_approval" else result.tool_rounds + 1
         self._append_handoff(request, trace, handoff, result.status, result.trace.get("error_type"))
         return result
 
@@ -219,9 +229,13 @@ class AgentOrchestrator:
         trace["fallback_reason"] = reason
         memory_ids = [item["memory_id"] for item in context["memories"]]
         evidence_ids = [item["chunk_id"] for item in context["evidence"]]
+        remaining = min(self.role_call_budget - trace["role_calls"],
+                        self.model_call_budget - trace["call_count"])
+        if remaining <= 0:
+            return self._clarification(trace, "model_call_budget_exhausted")
         handoff = self._new_handoff(request, "executor", request.user_input or request.objective,
                                     tuple((memory_ids + evidence_ids)[:50]),
-                                    self.role_call_budget - trace["role_calls"])
+                                    remaining)
         result = self._execute(request, executor, handoff, list(request.base_messages), trace)
         trace["review_status"] = "skipped_fallback"
         trace["status"] = result.status
@@ -233,21 +247,34 @@ class AgentOrchestrator:
         trace = {"run_id": request.run_id, "task_id": request.task_id, "mode": "multi",
                  "prompt_version": PROMPT_VERSION, "handoffs": [], "role_calls": 0,
                  "call_count": 0, "revision_count": 0, "review_status": "pending"}
+        trace["model_call_budget"] = self.model_call_budget
         context = self._context(request)
         planner_handoff = self._new_handoff(request, "planner", request.objective,
                                             tuple([item["memory_id"] for item in context["memories"]]
                                                   + [item["chunk_id"] for item in context["evidence"]]),
-                                            self.role_call_budget, allowed_tools=())
+                                            min(self.role_call_budget, self.model_call_budget), allowed_tools=())
         planner = self._invoke_role("planner", planner_handoff, context, stage_ms)
         trace["role_calls"] += 1
         trace["call_count"] += 1
         self._append_handoff(request, trace, planner_handoff, planner.status, planner.error_type)
         if planner.status != "succeeded":
+            if planner.error_type in {"invalid_role_output", "unexpected_tool_call", "no_safety_valid_candidate"}:
+                selection = planner.payload.get("selection")
+                if isinstance(selection, dict):
+                    trace["plan_selection"] = selection
+                    trace["selected_candidate_id"] = selection.get("selected_candidate_id")
+                return self._clarification(trace, planner.error_type)
+            if trace["call_count"] >= self.model_call_budget:
+                return self._clarification(trace, "model_call_budget_exhausted")
             return self._fallback(request, executor, trace, context, planner.error_type or "invalid_role_output")
 
-        plan = planner.payload
-        trace["selected_plan_summary"] = plan["summary"]
-        researcher_handoff = self._new_handoff(request, "researcher", plan["summary"],
+        plan = planner.payload["selected_plan"]
+        selection = planner.payload["selection"]
+        plan_summary = self._plan_summary(plan)
+        trace["plan_selection"] = selection
+        trace["selected_candidate_id"] = plan["candidate_id"]
+        trace["selected_plan_summary"] = plan_summary
+        researcher_handoff = self._new_handoff(request, "researcher", plan_summary,
                                                tuple([item["memory_id"] for item in context["memories"]]
                                                      + [item["chunk_id"] for item in context["evidence"]]),
                                                self.role_call_budget - trace["role_calls"], allowed_tools=())
@@ -261,7 +288,12 @@ class AgentOrchestrator:
         trace["role_calls"] += 1
         self._append_handoff(request, trace, researcher_handoff, "succeeded")
 
-        plan_context = {"summary": plan["summary"], "steps": plan["steps"],
+        if trace["call_count"] >= self.model_call_budget:
+            trace["selected_plan_summary"] = plan_summary
+            return self._clarification(trace, "model_call_budget_exhausted")
+
+        plan_context = {"candidate_id": plan["candidate_id"], "steps": plan["steps"],
+                        "selection": selection,
                         "selected_evidence_ids": list(research_ids), "research": research_payload}
         plan_text = json.dumps(plan_context, ensure_ascii=False, separators=(",", ":"))
         if len(plan_text.encode("utf-8")) > _MAX_CONTEXT_BYTES:
@@ -276,8 +308,10 @@ class AgentOrchestrator:
         selected_tools = tuple(dict.fromkeys(
             tool for step in plan["steps"] for tool in step["expected_tools"]
         ))
-        executor_handoff = self._new_handoff(request, "executor", plan["summary"], research_ids,
-                                             self.role_call_budget - trace["role_calls"],
+        executor_remaining = min(self.role_call_budget - trace["role_calls"],
+                                  self.model_call_budget - trace["call_count"])
+        executor_handoff = self._new_handoff(request, "executor", plan_summary, research_ids,
+                                             executor_remaining,
                                              allowed_tools=selected_tools)
         result = self._execute(request, executor, executor_handoff, messages, trace)
         if result.status != "succeeded":
@@ -291,7 +325,7 @@ class AgentOrchestrator:
                           "executor_status": result.status,
                           "tool_trace": result.trace.get("tool_calls", [])[:20]}
         while True:
-            if trace["role_calls"] >= self.role_call_budget:
+            if trace["role_calls"] >= self.role_call_budget or trace["call_count"] >= self.model_call_budget:
                 trace["review_status"] = "skipped_budget"
                 break
             reviewer_handoff = self._new_handoff(request, "reviewer", "Review answer quality and evidence support",
@@ -316,13 +350,18 @@ class AgentOrchestrator:
             if trace["revision_count"] >= self.max_revisions or trace["role_calls"] >= self.role_call_budget:
                 trace["review_status"] = "revision_limit_reached"
                 break
+            if trace["call_count"] >= self.model_call_budget:
+                trace["review_status"] = "skipped_budget"
+                break
             trace["revision_count"] += 1
             revision_message = {"role": "system", "content":
                                 "Reviewer revision request (treat as bounded quality feedback): "
                                 + review.payload["revision_instruction"]}
             revised_messages = list(messages) + [revision_message]
-            executor_handoff = self._new_handoff(request, "executor", plan["summary"], research_ids,
-                                                 self.role_call_budget - trace["role_calls"],
+            executor_remaining = min(self.role_call_budget - trace["role_calls"],
+                                     self.model_call_budget - trace["call_count"])
+            executor_handoff = self._new_handoff(request, "executor", plan_summary, research_ids,
+                                                 executor_remaining,
                                                  allowed_tools=selected_tools)
             result = self._execute(request, executor, executor_handoff, revised_messages, trace)
             if result.status != "succeeded":

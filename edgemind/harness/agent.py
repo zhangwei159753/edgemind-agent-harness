@@ -24,7 +24,7 @@ class AgentService:
                  memory: MemoryService | None = None, tools: ToolRegistry | None = None,
                  rag_service=None, builtin_tools: BuiltinToolRegistry | None = None,
                  policy_service: AgentPolicyService | None = None, orchestrator: AgentOrchestrator | None = None,
-                 memory_graph_expansion: bool = True):
+                 memory_graph_expansion: bool = True, orchestration_model_call_budget: int = 8):
         self.store = store
         self.client = client
         self.media = media or MediaProcessor()
@@ -37,6 +37,7 @@ class AgentService:
         self.policy_service = policy_service
         self.orchestrator = orchestrator
         self.memory_graph_expansion = bool(memory_graph_expansion)
+        self.orchestration_model_call_budget = orchestration_model_call_budget
 
     def _client(self):
         if self.client is None:
@@ -114,7 +115,8 @@ class AgentService:
                        on_tool_status: Callable[[str], None] | None = None,
                        skill: SkillDefinition | None = None, policy: AgentPolicy | None = None,
                        trace_collector: list[dict] | None = None,
-                       allowed_tool_override: tuple[str, ...] | None = None):
+                       allowed_tool_override: tuple[str, ...] | None = None,
+                       max_model_calls: int | None = None):
         tool_warning = None
         try:
             mcp_tools = self.tools.model_tools()
@@ -148,9 +150,14 @@ class AgentService:
         proposal_calls = []
         tool_call_data = None
         rounds = 0
+        model_calls = 0
         force_final = False
 
         while True:
+            if max_model_calls is not None and model_calls >= max_model_calls:
+                return ("已达到本轮模型调用预算，当前结果未完成。", "failed", proposals,
+                        tool_call_data, tool_trace, rounds, tool_warning, None, proposal_calls,
+                        model_calls)
             kwargs = {
                 "model": os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
                 "messages": messages,
@@ -159,6 +166,7 @@ class AgentService:
             if model_tools and not force_final:
                 kwargs.update({"tools": model_tools, "tool_choice": "auto"})
             model_started = time.perf_counter()
+            model_calls += 1
             response = self._client().chat.completions.create(**kwargs)
             stage_ms[f"deepseek_round_{rounds + 1}"] = round(
                 (time.perf_counter() - model_started) * 1000, 2
@@ -167,11 +175,11 @@ class AgentService:
             calls = list(getattr(message, "tool_calls", None) or [])
             if not calls:
                 return (message.content or "", "succeeded", proposals, tool_call_data,
-                        tool_trace, rounds, tool_warning, None, proposal_calls)
+                        tool_trace, rounds, tool_warning, None, proposal_calls, model_calls)
             if force_final:
                 return (message.content or "已达到工具调用轮次上限，以上信息基于已取得的结果。",
                         "succeeded", proposals, tool_call_data, tool_trace, rounds,
-                        tool_warning, None, proposal_calls)
+                        tool_warning, None, proposal_calls, model_calls)
 
             rounds += 1
             assistant_calls = []
@@ -276,7 +284,7 @@ class AgentService:
                 return (
                     message.content or "需要确认 MCP 工具调用后才能继续。",
                     "awaiting_tool_approval", proposals, tool_call_data, tool_trace,
-                    rounds, tool_warning, self._safe_tool_context(messages), proposal_calls,
+                    rounds, tool_warning, self._safe_tool_context(messages), proposal_calls, model_calls,
                 )
             if rounds >= max_rounds:
                 force_final = True
@@ -400,7 +408,10 @@ class AgentService:
             }
             if route_multi:
                 if self.orchestrator is None:
-                    self.orchestrator = AgentOrchestrator(self._client(), self.store)
+                    self.orchestrator = AgentOrchestrator(
+                        self._client(), self.store,
+                        model_call_budget=self.orchestration_model_call_budget,
+                    )
                 else:
                     # Reuse the same configured client used by the executor when it is created lazily.
                     self._client()
@@ -415,15 +426,16 @@ class AgentService:
                 def execute_handoff(handoff, execution_messages):
                     calls_trace = []
                     (executor_answer, executor_status, pending_calls, call_data, calls_trace,
-                     rounds, warning, tool_context_value, proposal_calls_value) = self._run_tool_loop(
+                     rounds, warning, tool_context_value, proposal_calls_value, model_calls) = self._run_tool_loop(
                         execution_messages, task_id, run_id, stage_ms, user_text, on_tool_status,
                         selected_skill, policy, trace_collector=calls_trace,
                         allowed_tool_override=handoff.allowed_tools,
+                        max_model_calls=handoff.remaining_calls,
                     )
                     return ExecutorResult(
                         executor_answer, executor_status, pending_calls,
                         {"tool_calls": calls_trace}, call_data, tool_context_value,
-                        proposal_calls_value, rounds, warning,
+                        proposal_calls_value, rounds, warning, model_calls,
                     )
 
                 orchestration_result = self.orchestrator.run(orchestration_request, execute_handoff, stage_ms)
@@ -441,13 +453,16 @@ class AgentService:
                     "mode": "multi", "route_reason": route_reason,
                     "handoffs": orchestration_result.trace.get("handoffs", []),
                     "selected_plan_summary": orchestration_result.trace.get("selected_plan_summary"),
+                    "selected_candidate_id": orchestration_result.trace.get("selected_candidate_id"),
+                    "plan_selection": orchestration_result.trace.get("plan_selection"),
                     "review_status": orchestration_result.trace.get("review_status", "unavailable"),
                     "call_count": orchestration_result.trace.get("call_count", 0),
+                    "model_call_budget": orchestration_result.trace.get("model_call_budget", 8),
                     "fallback_reason": orchestration_result.trace.get("fallback_reason"),
                 }
             else:
                 (answer, status, proposals, tool_call_data, tool_calls_trace, tool_rounds,
-                 tool_warning, tool_context, proposal_calls) = self._run_tool_loop(
+                 tool_warning, tool_context, proposal_calls, _) = self._run_tool_loop(
                     messages, task_id, run_id, stage_ms, user_text, on_tool_status, selected_skill, policy,
                     trace_collector=tool_calls_trace,
                 )

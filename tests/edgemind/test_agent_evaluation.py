@@ -14,6 +14,7 @@ from edgemind.harness.tasks import TaskService
 from edgemind.harness.tools import ToolRegistry
 
 DATASET = Path("tests/data/agent_eval_v1.jsonl")
+MULTI_DATASET = Path("tests/data/agent_multi_agent_v1.jsonl")
 
 
 def _call(name, arguments, call_id):
@@ -85,7 +86,9 @@ class _FixtureRag:
 
 
 def _fixtures(case):
-    return {"client": SimpleNamespace(chat=SimpleNamespace(completions=_Completions(case.fixture["responses"]))),
+    responses = case.fixture.get("responses_by_mode", {}).get(case.orchestration_mode,
+                                                               case.fixture.get("responses"))
+    return {"client": SimpleNamespace(chat=SimpleNamespace(completions=_Completions(responses))),
             "builtin_tools": _BuiltinTools(case), "mcp_manager": _McpManager(case),
             "rag_service": _FixtureRag(case.fixture.get("citations", []))}
 
@@ -93,7 +96,8 @@ def _fixtures(case):
 def _agent_factory(store, policy, case, fixtures):
     return AgentService(store, client=fixtures["client"], builtin_tools=fixtures["builtin_tools"],
                         tools=ToolRegistry(store, manager=fixtures["mcp_manager"]),
-                        rag_service=fixtures["rag_service"], policy_service=_FixedPolicy(policy))
+                        rag_service=fixtures["rag_service"], policy_service=_FixedPolicy(policy),
+                        orchestration_model_call_budget=case.max_model_calls)
 
 
 def test_dataset_loads_manifest_and_all_regression_scenarios():
@@ -105,6 +109,26 @@ def test_dataset_loads_manifest_and_all_regression_scenarios():
     assert dataset.dataset_hash
     mcp_case = next(case for case in dataset.cases if case.example_id == "mcp_confirmation")
     assert "expected_outcome" in mcp_case.checker_ids
+    assert all(case.orchestration_mode == "single" for case in dataset.cases)
+    assert all(case.expected_plan_id is None and case.max_model_calls == 8 for case in dataset.cases)
+
+
+def test_multi_agent_fixture_records_selected_plan_roles_and_call_budget():
+    store = HarnessStore(":memory:")
+    policy = AgentPolicyService(store).get_active()
+    runner = AgentEvaluationRunner(_agent_factory, _fixtures, lambda: HarnessStore(":memory:"))
+
+    report = runner.run(MULTI_DATASET, policy, mode="fixture")
+
+    assert report["metrics"]["case_pass_rate"] == 1.0
+    assert report["metrics"]["forbidden_tool_attempts"] == 0
+    case = report["case_results"][0]
+    assert case["orchestration_mode"] == "multi"
+    assert case["selected_plan_id"] == "summary-plan"
+    assert case["role_sequence"] == ["planner", "researcher", "executor", "reviewer"]
+    assert case["model_call_count"] == 3 <= case["max_model_calls"]
+    assert report["metrics"]["model_call_count_mean"] == 3
+    assert report["metrics"]["latency_ms_p95"] is not None
 
 
 def test_loader_rejects_duplicate_ids_dynamic_code_and_secret_values(tmp_path):

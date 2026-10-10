@@ -115,7 +115,9 @@ class _RestrictedMcpManager:
 
 
 def _fixture_factory(case):
-    return {"client": SimpleNamespace(chat=SimpleNamespace(completions=_Completions(case.fixture["responses"]))),
+    responses = case.fixture.get("responses_by_mode", {}).get(case.orchestration_mode,
+                                                               case.fixture.get("responses"))
+    return {"client": SimpleNamespace(chat=SimpleNamespace(completions=_Completions(responses))),
             "builtin_tools": _BuiltinTools(case), "mcp_manager": _McpManager(case),
             "rag_service": _FixtureRag(case.fixture.get("citations", []))}
 
@@ -124,9 +126,11 @@ def _fixture_agent_factory(store, policy, case, fixtures):
     if fixtures is not None:
         return AgentService(store, client=fixtures["client"], builtin_tools=fixtures["builtin_tools"],
                             tools=ToolRegistry(store, manager=fixtures["mcp_manager"]),
-                            rag_service=fixtures["rag_service"], policy_service=_FixedPolicy(policy))
+                            rag_service=fixtures["rag_service"], policy_service=_FixedPolicy(policy),
+                            orchestration_model_call_budget=case.max_model_calls)
     return AgentService(store, memory=MemoryService(store), tools=ToolRegistry(store),
-                        rag_service=None, policy_service=_FixedPolicy(policy))
+                            rag_service=None, policy_service=_FixedPolicy(policy),
+                            orchestration_model_call_budget=case.max_model_calls)
 
 
 def build_evaluation_runner(services) -> AgentEvaluationRunner:
@@ -143,6 +147,7 @@ def build_evaluation_runner(services) -> AgentEvaluationRunner:
             tools=ToolRegistry(store, manager=_RestrictedMcpManager(real_tools.manager, allowed)),
             builtin_tools=_RestrictedBuiltinTools(real_builtins, allowed),
             rag_service=services.get("rag_service"), policy_service=_FixedPolicy(policy),
+            orchestration_model_call_budget=getattr(case, "max_model_calls", 8),
         )
 
     return AgentEvaluationRunner(agent_factory, _fixture_factory,
