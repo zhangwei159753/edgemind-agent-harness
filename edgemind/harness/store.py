@@ -2,11 +2,12 @@ import json
 import re
 import sqlite3
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import HarnessEvent, MemoryItem, TaskRecord
+from .models import HarnessEvent, MemoryEdge, MemoryItem, TaskRecord
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -168,6 +169,29 @@ class HarnessStore:
                     CREATE INDEX IF NOT EXISTS idx_harness_agent_experiments_candidate
                         ON harness_agent_experiments(candidate_policy_id, created_at);
                     UPDATE harness_schema SET version=4;
+                """)
+            row = conn.execute("SELECT version FROM harness_schema LIMIT 1").fetchone()
+            version = int(row[0]) if row else 1
+            if version < 5:
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS harness_memory_edges (
+                        edge_id TEXT PRIMARY KEY,
+                        source_memory_id TEXT NOT NULL REFERENCES harness_memories(memory_id) ON DELETE CASCADE,
+                        target_memory_id TEXT NOT NULL REFERENCES harness_memories(memory_id) ON DELETE CASCADE,
+                        relation TEXT NOT NULL CHECK(relation IN ('derived_from','supports','contradicts','used_in','similar_to')),
+                        status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+                        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+                        source_run_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        CHECK(source_memory_id <> target_memory_id),
+                        UNIQUE(source_memory_id, target_memory_id, relation)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_harness_memory_edges_source_status
+                        ON harness_memory_edges(source_memory_id, status);
+                    CREATE INDEX IF NOT EXISTS idx_harness_memory_edges_target_status
+                        ON harness_memory_edges(target_memory_id, status);
+                    UPDATE harness_schema SET version=5;
                 """)
     @property
     def schema_version(self) -> int:
@@ -412,6 +436,68 @@ class HarnessStore:
             cursor = conn.execute("DELETE FROM harness_memories WHERE memory_id=?", (memory_id,))
         return cursor.rowcount > 0
 
+    def put_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
+        if not isinstance(edge, MemoryEdge):
+            raise ValueError("edge must be a MemoryEdge")
+        source_id, target_id = edge.source_memory_id, edge.target_memory_id
+        if edge.relation == "similar_to" and target_id < source_id:
+            source_id, target_id = target_id, source_id
+        normalized = replace(edge, source_memory_id=source_id, target_memory_id=target_id,
+                             created_at=edge.created_at or _now(), updated_at=_now())
+        try:
+            with self._connect() as conn:
+                conn.execute("""INSERT INTO harness_memory_edges
+                    (edge_id, source_memory_id, target_memory_id, relation, status, confidence,
+                     source_run_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (normalized.edge_id, normalized.source_memory_id, normalized.target_memory_id,
+                     normalized.relation, normalized.status, normalized.confidence,
+                     normalized.source_run_id, normalized.created_at, normalized.updated_at))
+        except sqlite3.IntegrityError as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValueError("duplicate memory edge") from exc
+            if "FOREIGN KEY constraint failed" in str(exc):
+                raise ValueError("memory edge references an unknown memory") from exc
+            raise ValueError("invalid memory edge") from exc
+        return normalized
+
+    def get_memory_edge(self, edge_id: str) -> MemoryEdge | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM harness_memory_edges WHERE edge_id=?", (edge_id,)).fetchone()
+        return None if row is None else self._memory_edge(row)
+
+    def list_memory_edges(self, memory_id: str, status: str | None = "approved",
+                          limit: int = 100) -> list[MemoryEdge]:
+        if status is not None and status not in {"pending", "approved", "rejected"}:
+            raise ValueError("invalid memory edge status filter")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
+            raise ValueError("limit must be an integer from 1 to 500")
+        clauses = "(source_memory_id=? OR target_memory_id=?)"
+        params: list[Any] = [memory_id, memory_id]
+        if status is not None:
+            clauses += " AND status=?"
+            params.append(status)
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM harness_memory_edges WHERE " + clauses +
+                                " ORDER BY created_at DESC, edge_id LIMIT ?", (*params, limit)).fetchall()
+        return [self._memory_edge(row) for row in rows]
+
+    def review_memory_edge(self, edge_id: str, status: str) -> MemoryEdge:
+        if status not in {"approved", "rejected"}:
+            raise ValueError("review status must be approved or rejected")
+        with self._connect() as conn:
+            cursor = conn.execute("UPDATE harness_memory_edges SET status=?, updated_at=? WHERE edge_id=?",
+                                  (status, _now(), edge_id))
+            if not cursor.rowcount:
+                raise ValueError(f"unknown memory edge: {edge_id}")
+        return self.get_memory_edge(edge_id)
+
+    def delete_memory_edges_for_memory(self, memory_id: str) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM harness_memory_edges WHERE source_memory_id=? OR target_memory_id=?",
+                                  (memory_id, memory_id))
+        return cursor.rowcount
+
     def export_memories(self, output_path: str | Path, approved_only: bool = False) -> int:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,6 +555,12 @@ class HarnessStore:
         return MemoryItem(row["memory_id"], row["layer"], row["content"], row["status"], row["source_task_id"],
                           row["source_run_id"], float(row["confidence"]), json.loads(row["metadata_json"]),
                           None if row["embedding_json"] is None else json.loads(row["embedding_json"]), row["created_at"], row["updated_at"])
+
+    @staticmethod
+    def _memory_edge(row: sqlite3.Row) -> MemoryEdge:
+        return MemoryEdge(row["edge_id"], row["source_memory_id"], row["target_memory_id"], row["relation"],
+                          row["status"], float(row["confidence"]), row["source_run_id"],
+                          row["created_at"], row["updated_at"])
 
     def create_tool_proposal(self, proposal: dict[str, Any]) -> None:
         now = _now()

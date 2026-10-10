@@ -45,7 +45,7 @@ def test_default_policy_candidate_versioning_promotion_and_rollback(tmp_path):
     restored = policies.rollback(baseline.policy_id, confirmed=True)
     assert restored == baseline
     assert policies.get_active() == baseline
-    assert store.schema_version == 4
+    assert store.schema_version == 5
     assert [row["action"] for row in store.list_agent_policy_transitions()] == ["promote", "rollback"]
 
 

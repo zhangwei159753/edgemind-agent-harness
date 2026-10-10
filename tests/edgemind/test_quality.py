@@ -47,7 +47,7 @@ def test_v1_database_migrates_additively_and_preserves_existing_rows(tmp_path):
 
     store = HarnessStore(database)
 
-    assert store.schema_version == 4
+    assert store.schema_version == 5
     assert store.get_task("task-1").title == "Task"
     assert store.list_events("task-1")[0].run_id == "run-1"
     assert store.get_memory("memory-1").content == "SQLite"

@@ -48,7 +48,7 @@ def test_same_dataset_candidate_gates_must_pass_before_confirmed_promotion(tmp_p
     assert report["passed"] is True
     assert report["baseline"]["dataset_hash"] == report["candidate"]["dataset_hash"]
     assert [call[1] for call in runner.calls] == ["baseline-v1", candidate.policy_id]
-    assert store.schema_version == 4
+    assert store.schema_version == 5
     with pytest.raises(ValueError, match="confirmation"):
         experiments.promote(report["experiment_id"], confirmed=False)
     assert policies.get_active().policy_id == "baseline-v1"

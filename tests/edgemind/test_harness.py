@@ -23,7 +23,7 @@ def test_task_checkpoint_survives_store_reopen_and_legacy_tables_remain(tmp_path
     assert restored.state["last_progress"] == "phase one"
     assert restored.state["next_step"] == "phase two"
     assert legacy_value == "preserved"
-    assert reopened.schema_version == 4
+    assert reopened.schema_version == 5
 
 
 def test_pending_memory_is_hidden_until_review_approval(tmp_path):
