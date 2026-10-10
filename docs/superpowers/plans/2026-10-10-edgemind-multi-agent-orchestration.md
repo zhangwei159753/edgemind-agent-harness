@@ -38,7 +38,7 @@
 
 **Interfaces:**
 - Produce `Handoff(run_id: str, task_id: str, role: str, goal: str, evidence_ids: tuple[str, ...], allowed_tools: tuple[str, ...], remaining_calls: int, output_schema: str)` and `RoleResult(role: str, status: str, payload: dict, error_type: str | None)` immutable dataclasses.
-- Produce `should_orchestrate(task_objective: str, user_input: str, mode: str = "auto") -> bool`; accepted modes are `auto`, `single`, `multi`. `single` always returns false and `multi` always returns true. `auto` returns true only when input contains a sequence marker (`先…再…`, `然后`, `接着`, `依次`) or at least two requested action verbs (`搜索`, `查询`, `检索`, `比较`, `核验`, `总结`, `分析`, `整理`, `生成`) connected by `并/并且/以及`; otherwise it returns false. These routing modes never override security policy.
+- Produce `should_orchestrate(task_objective: str, user_input: str, mode: str = "auto") -> bool`; accepted modes are `auto`, `single`, `multi`. `single` always returns false and `multi` always returns true. `auto` returns true when input contains a sequence marker (`先…再…`, `然后`, `接着`, `依次`), when at least two requested action verbs (`搜索`, `查询`, `检索`, `比较`, `核验`, `总结`, `分析`, `整理`, `生成`) are connected by `并/并且/以及`, or when task objective and user input each contain a different action verb; otherwise it returns false. These routing modes never override security policy.
 - Handoff validation rejects unknown fields, missing IDs/goal, unsupported role/schema, overlong strings/collections, and non-positive budgets.
 
 - [ ] **Step 1: Write failing tests** for valid/invalid `Handoff`, single-step auto routing, multi-step auto routing, and explicit overrides.
