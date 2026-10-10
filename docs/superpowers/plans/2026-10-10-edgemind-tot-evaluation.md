@@ -32,6 +32,7 @@
 
 **Files:**
 - Create: `edgemind/harness/orchestration/planning.py`
+- Modify: `edgemind/harness/orchestration/__init__.py` (public planner exports)
 - Create: `tests/edgemind/test_agent_tot_planning.py`
 - Modify: `edgemind/harness/orchestration/models.py` from the orchestration plan
 
